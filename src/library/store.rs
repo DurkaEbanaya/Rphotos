@@ -696,6 +696,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("photos");
         std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         let dated = root.join("dated.jpg");
         super::super::facts::tests::jpeg(&dated);
         let original = std::fs::read(&dated).unwrap();
@@ -738,6 +739,8 @@ mod tests {
         let root = temp.path().join("photos");
         let empty = root.join("empty/deep");
         std::fs::create_dir_all(&empty).unwrap();
+        let root = root.canonicalize().unwrap();
+        let empty = root.join("empty/deep");
         std::fs::create_dir(root.join(".private")).unwrap();
         std::fs::write(root.join("original.png"), b"untouched").unwrap();
         let path = temp.path().join("data/library");

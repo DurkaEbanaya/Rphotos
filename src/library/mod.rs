@@ -568,6 +568,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("demo");
         std::fs::create_dir(&source).unwrap();
+        // macOS /var -> /private/var and Windows extended paths are canonicalized
+        // by the index. Expectations must use that same native representation.
+        let source = source.canonicalize().unwrap();
         for n in 0..18 {
             let (width, height) = if n % 3 == 0 { (240, 360) } else { (480, 300) };
             let image = image::RgbImage::from_fn(width, height, |x, y| {

@@ -209,4 +209,10 @@ Strict allowlist: никаких settings/index/captures/credentials. Dependency
 76 crates не содержат отдельного license file — отмечены с source/repository URL.
 Это не полный юридический аудит или стабильный release. Нативные зависимости OS
 и source-offer obligations перед публичным релизом требуют отдельной проверки.
-CI делает opt-dev builds + upload artifact для3OS; remote run пока не выполнен.
+CI делает opt-dev builds + upload artifact для3OS. Репозиторий опубликован:
+https://github.com/DurkaEbanaya/Rphotos . Первый remote run скомпилировал macOS,
+но обнаружил различие `/var`→`/private/var` в test expectations; fixtures приведены
+к canonical paths, как и настоящий индекс. Результаты следующего run фиксировать
+в VERIFICATION, не выдавать compile за нативную приёмку.
+`python3 scripts/test_package.py` проверяет3OS archive branches на синтетических
+входах: strict allowlist, SHA256, font/MPL notices и отсутствие архива при missing input.

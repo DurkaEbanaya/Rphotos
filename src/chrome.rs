@@ -1,4 +1,4 @@
-//! Client-side title bar. Opaque fallback until platform backdrop integration.
+//! Client-side title bar with platform backdrop or an opaque fallback.
 use eframe::egui::{self, pos2, vec2, Color32, Rect, Sense, Stroke};
 
 use crate::library::{ui::Tokens, Appearance, Language};

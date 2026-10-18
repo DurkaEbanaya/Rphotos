@@ -12,6 +12,7 @@
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |
+| `python3 scripts/test_package.py` | 2 passed; Linux/macOS/Windows archive fixtures, allowlist, notices, SHA256 |
 | GPU offscreen capture-тесты | Успешно; библиотека и пять видов просмотрщика, включая zoom-popup |
 | Нативный запуск без аргументов | Окно жило 6 секунд без аварии; затем процесс остановлен тестом |
 | Повторный нативный smoke после смены просмотрщика | Библиотека и просмотр synthetic PNG по 4 секунды без аварии |
@@ -19,6 +20,7 @@
 | Smoke R2 shell | Библиотека 5 секунд без аварии, изолированные XDG; не полный native workflow |
 | Smoke R3 gallery | 30 synthetic фото в изолированном индексе/кеше, 5 секунд без аварии |
 | Smoke R4–R6 | Библиотека и synthetic PNG по5с, изолированные XDG; EXT blur protocol подключён |
+| Оптимизированный portable build | `cargo build --locked --profile opt-dev`; обе сцены по5с без аварии |
 
 Нативный smoke-запуск использовал отдельные XDG data/config/cache в тестовом
 временном каталоге, без индексации личных папок. Он не подтверждает весь
