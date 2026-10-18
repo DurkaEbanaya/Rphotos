@@ -7,6 +7,7 @@ Archives are portable build artifacts, not signed installers/AppImage/.app bundl
 import argparse
 import hashlib
 import io
+import json
 import platform
 import re
 import subprocess
@@ -24,8 +25,12 @@ def package(root, profile, output):
     binary = "rphotos.exe" if system == "windows" else "rphotos"
     files = [(root / "target" / profile / binary, binary)]
     files.extend((root / file, file) for file in (
-        "LICENSE-MIT", "LICENSE-APACHE", "README.md", "docs/VERIFICATION.md",
+        "LICENSE-MIT", "LICENSE-APACHE", "README.md", "docs/VERIFICATION.md", "docs/PREVIEW.md",
         "docs/UPSTREAM-README.md", "assets/rphotos.svg", "assets/rphotos.png",
+        "docs/PRODUCT.md", "docs/IMPLEMENTATION.md", "docs/PHOTOS-2019.md",
+        "docs/PHOTOS-2019-AUDIT.md", "docs/screenshots/README.md",
+        "docs/screenshots/collection-light.png", "docs/screenshots/albums.png",
+        "docs/screenshots/viewer-light.png",
         "Cargo.lock",
     ))
     if system == "linux":
@@ -79,12 +84,33 @@ def package(root, profile, output):
                 if path.is_file() and (path.suffix == ".rs" or path.name in ("Cargo.toml", "README.md")):
                     licenses.extend((f"--- MPL covered source: {path.relative_to(directory)} ---", path.read_text(encoding="utf-8", errors="replace")))
     third_party = "\n".join(licenses).encode("utf-8")
+    with files[0][0].open("rb") as file:
+        binary_digest = hashlib.file_digest(file, "sha256").hexdigest()
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, stderr=subprocess.DEVNULL,
+        ).decode("ascii").strip()
+        dirty = bool(subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=root, stderr=subprocess.DEVNULL,
+        ).strip())
+    except (OSError, subprocess.CalledProcessError):
+        commit = None
+        dirty = None
+    build_info = json.dumps({
+        "application": "Rphotos", "version": version, "profile": profile,
+        "os": system, "architecture": arch, "source_commit": commit,
+        "source_dirty_at_packaging": dirty,
+        "binary_sha256": binary_digest,
+        "development_build": True,
+    }, indent=2).encode("utf-8")
     if system == "windows":
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as out:
             for path, relative in files:
                 out.write(path, f"{name}/{relative}")
             out.writestr(f"{name}/BUILD-NOTICE.txt", notice)
             out.writestr(f"{name}/THIRD-PARTY-NOTICES.txt", third_party)
+            out.writestr(f"{name}/BUILD-INFO.json", build_info)
     else:
         with tarfile.open(archive, "w:gz") as out:
             for path, relative in files:
@@ -97,6 +123,10 @@ def package(root, profile, output):
             info.size = len(third_party)
             info.mode = 0o644
             out.addfile(info, io.BytesIO(third_party))
+            info = tarfile.TarInfo(f"{name}/BUILD-INFO.json")
+            info.size = len(build_info)
+            info.mode = 0o644
+            out.addfile(info, io.BytesIO(build_info))
     with archive.open("rb") as file:
         digest = hashlib.file_digest(file, "sha256").hexdigest()
     archive.with_name(archive.name + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
@@ -105,7 +135,6 @@ def package(root, profile, output):
 
 
 def json_metadata(root):
-    import json
     return json.loads(subprocess.check_output(
         ["cargo", "metadata", "--locked", "--format-version", "1"], cwd=root,
     ))

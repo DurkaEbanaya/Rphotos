@@ -2,6 +2,7 @@
 import contextlib
 import hashlib
 import io
+import json
 import tarfile
 import tempfile
 import unittest
@@ -17,8 +18,12 @@ class PackagingTests(unittest.TestCase):
         (root / "Cargo.toml").write_text('[package]\nversion = "0.1.0-dev"\n')
         for name in (
             "target/opt-dev/rphotos", "target/opt-dev/rphotos.exe", "LICENSE-MIT",
-            "LICENSE-APACHE", "README.md", "docs/VERIFICATION.md",
+            "LICENSE-APACHE", "README.md", "docs/VERIFICATION.md", "docs/PREVIEW.md",
             "docs/UPSTREAM-README.md", "assets/rphotos.svg", "assets/rphotos.png",
+            "docs/PRODUCT.md", "docs/IMPLEMENTATION.md", "docs/PHOTOS-2019.md",
+            "docs/PHOTOS-2019-AUDIT.md", "docs/screenshots/README.md",
+            "docs/screenshots/collection-light.png", "docs/screenshots/albums.png",
+            "docs/screenshots/viewer-light.png",
             "assets/rphotos.desktop", "Cargo.lock",
             # These must NOT be collected by the archive's strict allowlist.
             "settings.yaml", "private/photo.jpg", "private/hosts.yml",
@@ -59,7 +64,7 @@ class PackagingTests(unittest.TestCase):
                     with tarfile.open(archive) as out:
                         contents = {n: out.extractfile(n).read() for n in out.getnames()}
                 relative = {n.split("/", 1)[1] for n in contents}
-                self.assertEqual(len(relative), 12 if system == "Linux" else 11)
+                self.assertEqual(len(relative), 22 if system == "Linux" else 21)
                 self.assertIn("rphotos.exe" if system == "Windows" else "rphotos", relative)
                 self.assertNotIn("settings.yaml", relative)
                 self.assertFalse(any("private" in n or ".." in Path(n).parts for n in contents))
@@ -67,6 +72,13 @@ class PackagingTests(unittest.TestCase):
                                if n.endswith("THIRD-PARTY-NOTICES.txt"))
                 self.assertIn(b"synthetic MPL covered source", notices)
                 self.assertIn(b"synthetic font attribution", notices)
+                build = json.loads(next(v for n, v in contents.items()
+                                        if n.endswith("BUILD-INFO.json")))
+                self.assertEqual(build["binary_sha256"], hashlib.sha256(b"synthetic fixture").hexdigest())
+                self.assertIsNone(build["source_commit"])
+                self.assertIsNone(build["source_dirty_at_packaging"])
+                self.assertEqual(build["profile"], "opt-dev")
+                self.assertTrue(build["development_build"])
 
     def test_missing_input_does_not_create_archive(self):
         with tempfile.TemporaryDirectory() as temp:

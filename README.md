@@ -180,6 +180,7 @@ install -Dm644 assets/rphotos.png ~/.local/share/icons/hicolor/256x256/apps/rpho
 Репозиторий проекта: [DurkaEbanaya/Rphotos](https://github.com/DurkaEbanaya/Rphotos).
 Development artifacts в GitHub Actions не являются стабильным релизом;
 ссылки на релизы ViewSkater не являются загрузками Rphotos.
+Перед запуском предварительной сборки: [docs/PREVIEW.md](docs/PREVIEW.md).
 
 ## Происхождение и лицензии
 
