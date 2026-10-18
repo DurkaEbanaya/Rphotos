@@ -4,7 +4,7 @@
 
 A fast, cross-platform image viewer built with Rust and egui. Designed for exploring and comparing large sets of images. Linux, macOS and Windows are supported.
 
-This is the egui port of the original [iced version](https://github.com/ggand0/viewskater).
+This is the egui port of the original [iced version](https://github.com/ggand0/viewskater-iced).
 
 ## Features
 
