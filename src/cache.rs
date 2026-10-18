@@ -411,6 +411,23 @@ impl SlidingWindowCache {
         Some(record)
     }
 
+    /// Library entrypoint: queue the centre first and never decode on the UI
+    /// thread. The existing benchmark/synchronous viewer entrypoint is unchanged.
+    pub fn initialize_background(&mut self, center_index: usize, image_paths: &[PathBuf]) {
+        if image_paths.is_empty() { return; }
+        self.pending_decodes.clear();
+        self.pending_uploads.clear();
+        let center_index = center_index.min(image_paths.len() - 1);
+        self.first_file_index = center_index.saturating_sub(self.cache_count)
+            .min(image_paths.len().saturating_sub(self.cache_size()));
+        self.slots.clear();
+        self.slots.resize(self.cache_size(), None);
+        self.request_decode(center_index, &image_paths[center_index]);
+        for (index, path) in image_paths.iter().enumerate().skip(self.first_file_index).take(self.cache_size()) {
+            if index != center_index { self.request_decode(index, path); }
+        }
+    }
+
     /// Poll for completed background decodes and upload textures.
     /// Call this every frame from `update()`.
     ///
@@ -967,6 +984,8 @@ pub struct DecodeLruCache {
 }
 
 impl DecodeLruCache {
+    pub(crate) fn context(&self) -> &egui::Context { &self.ctx }
+
     pub fn new(ctx: &egui::Context, budget_mb: usize) -> Self {
         Self {
             entries: HashMap::new(),

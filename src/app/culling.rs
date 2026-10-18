@@ -57,7 +57,7 @@ impl App {
         self.trash_or_confirm(vec![path], ctx);
     }
 
-    fn trash_or_confirm(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
+    pub(super) fn trash_or_confirm(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
         if paths.is_empty() {
             return;
         }
@@ -73,6 +73,7 @@ impl App {
     /// showing the file does the move through `Pane::remove_current`, so a
     /// failed move leaves it untouched; the other panes follow by position.
     pub(super) fn trash_paths(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
+        let mut changed = false;
         for path in paths {
             let showing = self
                 .panes
@@ -86,6 +87,7 @@ impl App {
             };
             match result {
                 Ok(()) => {
+                    changed = true;
                     log::info!("Moved to trash: {}", path.display());
                     for pane in &mut self.panes {
                         if let Some(index) = pane.image_paths.iter().position(|p| *p == path) {
@@ -103,6 +105,7 @@ impl App {
                 }
             }
         }
+        if changed { self.library.refresh(); }
         ctx.request_repaint();
     }
 

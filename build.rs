@@ -40,11 +40,14 @@ fn main() -> io::Result<()> {
     // Rerun if git changes
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/heads/");
+    println!("cargo:rerun-if-changed=assets/rphotos.ico");
 
     // Embed icon and version info into Windows executable
     if env::var_os("CARGO_CFG_WINDOWS").is_some() {
         WindowsResource::new()
-            .set_icon("./assets/icon.ico")
+            .set_icon("./assets/rphotos.ico")
+            .set("ProductName", "Rphotos")
+            .set("FileDescription", "Rphotos photo viewer")
             .compile()?;
     }
 

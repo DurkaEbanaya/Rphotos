@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Original Rphotos artwork. MIT OR Apache-2.0, same as the application. -->
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="#0078d7"/>
+  <path d="M108 112H358V344H108Z" fill="#80c8ff"/>
+  <path d="M144 148H404V400H144Z" fill="#fff"/>
+  <path d="M164 168H384V320H164Z" fill="#dcefff"/>
+  <circle cx="330" cy="208" r="22" fill="#0078d7"/>
+  <path d="M164 320L236 224L292 292L332 252L384 320Z" fill="#0078d7"/>
+  <path d="M172 364H276" stroke="#0078d7" stroke-width="16"/>
+</svg>

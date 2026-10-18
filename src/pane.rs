@@ -12,7 +12,7 @@ use crate::metadata::MetadataRecord;
 use crate::settings::{ImageDiscoveryOptions};
 use crate::view_animation::{Easing, ViewAnimation, ViewTransform};
 
-const MIN_ZOOM: f32 = 0.05;
+const MIN_ZOOM: f32 = 0.001;
 const MAX_ZOOM: f32 = 100.0;
 
 const IMAGE_DOUBLE_CLICK_MAX_DELAY: f64 = 0.30;
@@ -59,6 +59,8 @@ pub(crate) struct Pane {
     /// count, recorded only while `--bench-slider` asks
     /// (`record_sync_load_times`).
     sync_load_times: Option<(Vec<crate::bench::slider::SyncLoadTiming>, usize)>,
+    swipe: Option<isize>,
+    touch_drag: egui::Vec2,
 }
 
 impl Pane {
@@ -95,10 +97,14 @@ impl Pane {
             image_clicked: false,
             view_animation: None,
             sync_load_times: None,
+            swipe: None,
+            touch_drag: egui::Vec2::ZERO,
         }
     }
 
     pub(crate) fn close(&mut self) {
+        self.swipe = None;
+        self.touch_drag = egui::Vec2::ZERO;
         self.image_paths.clear();
         self.current_index = 0;
         self.current_texture = None;
@@ -151,6 +157,21 @@ impl Pane {
         self.cache = Some(c);
         self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx, self.preview_budget_mb));
         self.slider_loader = Some(cache::SliderLoader::new(ctx));
+    }
+
+    /// Open the library's filtered order without decoding on the UI thread.
+    pub(crate) fn open_library(&mut self, paths: Vec<PathBuf>, index: usize, ctx: &egui::Context) {
+        self.close();
+        if paths.is_empty() { return; }
+        self.current_index = index.min(paths.len() - 1);
+        self.dir_path = paths[self.current_index].parent().map(Path::to_path_buf);
+        self.image_paths = paths;
+        let mut cache = cache::SlidingWindowCache::new(ctx, self.cache_count, self.decode_threads);
+        cache.initialize_background(self.current_index, &self.image_paths);
+        self.cache = Some(cache);
+        self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx, self.preview_budget_mb));
+        self.slider_loader = Some(cache::SliderLoader::new(ctx));
+        ctx.request_repaint();
     }
 
     /// Synchronous decode fallback for slider drag and jump.
@@ -218,6 +239,45 @@ impl Pane {
     fn reset_view(&mut self) {
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
+    }
+
+    pub(crate) fn fit_view(&mut self) { self.view_animation = None; self.reset_view(); }
+
+    pub(crate) fn set_zoom(&mut self, zoom: f32) {
+        self.view_animation = None;
+        self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        self.pan = egui::Vec2::ZERO;
+    }
+
+    pub(crate) fn actual_size(&mut self, rect: egui::Rect, pixels_per_point: f32) {
+        if let Some(texture) = &self.current_texture {
+            let size = texture.size_vec2();
+            self.set_zoom(1.0 / ((rect.width() / size.x).min(rect.height() / size.y) * pixels_per_point));
+        }
+    }
+
+    pub(crate) fn take_swipe(&mut self) -> Option<isize> { self.swipe.take() }
+
+    /// Responsive single-photo navigation: reuse a ready neighbor or queue a
+    /// new background window. Never decode a cache miss on the event thread.
+    pub(crate) fn navigate_background(&mut self, delta: isize, ctx: &egui::Context) {
+        if self.image_paths.is_empty() { return; }
+        let index = (self.current_index as isize + delta).clamp(0, self.image_paths.len() as isize - 1) as usize;
+        self.jump_background(index, ctx);
+    }
+
+    pub(crate) fn jump_background(&mut self, index: usize, ctx: &egui::Context) {
+        if self.image_paths.is_empty() { return; }
+        let index = index.min(self.image_paths.len() - 1);
+        if index == self.current_index { return; }
+        let delta = index as isize - self.current_index as isize;
+        if delta.abs() == 1 && self.navigate(delta, ctx) { return; }
+        self.current_index = index;
+        self.fit_view();
+        self.set_current(None, ctx);
+        let cache = self.cache.get_or_insert_with(|| cache::SlidingWindowCache::new(ctx, self.cache_count, self.decode_threads));
+        cache.initialize_background(index, &self.image_paths);
+        ctx.request_repaint();
     }
 
     /// Try to navigate by `delta` images. Returns true if the display advanced.
@@ -373,6 +433,14 @@ impl Pane {
         if let Some(tc) = &mut self.thumbnail_cache {
             tc.poll(&self.image_paths);
         }
+        if self.current_record.is_none() {
+            let ready = self.cache.as_ref().and_then(|c| c.decoded_for(self.current_index));
+            if let Some(ready) = ready {
+                // Cache already owns its context; the app context is the same.
+                let ctx = self.decode_cache.context().clone();
+                self.show_decoded(ready, &ctx);
+            }
+        }
     }
 
     /// Move the current image to the trash through `trasher` and drop it
@@ -525,6 +593,10 @@ impl Pane {
                 });
             }
         } else {
+            if self.current_record.is_none() {
+                ui.centered_and_justified(|ui| { ui.spinner(); });
+                return false;
+            }
             let no_preview = self.current_record.as_ref().is_some_and(|record| record.no_embedded_preview);
             ui.centered_and_justified(|ui| {
                 ui.label(if no_preview { "No embedded preview in this RAW file" } else { "Failed to load image" });
@@ -699,15 +771,32 @@ impl Pane {
 
         // 2. Direct input: applies immediately and cancels any running animation.
         //    Zoom: scroll wheel (when enabled) or Ctrl/Cmd+scroll, plus pinch.
-        if response.hovered() && (self.mouse_wheel_zoom || ui.input(|i| i.modifiers.command)) {
+        if (response.hovered() || ui.input(|i| i.multi_touch().is_some_and(|g| available.contains(g.start_pos))))
+            && (self.mouse_wheel_zoom || ui.input(|i| i.modifiers.command || i.zoom_delta() != 1.0)) {
             self.zoom_image(ui, &response, &available);
         }
 
         //    Pan: drag. Also clears a pending first click.
+        let touch = ui.input(|i| i.any_touches());
+        let multi_touch = ui.input(|i| i.multi_touch());
+        if response.drag_started() { self.touch_drag = egui::Vec2::ZERO; }
         if response.dragged() {
             self.last_image_click = None;
             self.view_animation = None;
-            self.pan += response.drag_delta();
+            if multi_touch.is_some() { self.touch_drag = egui::Vec2::ZERO; }
+            else if touch && (self.zoom - 1.0).abs() < 0.01 {
+                self.touch_drag += response.drag_delta();
+            } else { self.pan += response.drag_delta(); }
+        }
+        if let Some(gesture) = multi_touch.filter(|g| available.contains(g.start_pos)) {
+            self.pan += gesture.translation_delta;
+            self.touch_drag = egui::Vec2::ZERO;
+        }
+        if response.drag_stopped() {
+            if self.touch_drag.x.abs() > 72.0 && self.touch_drag.x.abs() > self.touch_drag.y.abs() * 1.4 {
+                self.swipe = Some(if self.touch_drag.x < 0.0 { 1 } else { -1 });
+            }
+            self.touch_drag = egui::Vec2::ZERO;
         }
 
         // 3. Double-click: toggle fit-to-screen / 1:1 by starting an animation (applied in step 1).
@@ -715,7 +804,7 @@ impl Pane {
             let is_fit_to_screen = (self.zoom - 1.0).abs() < f32::EPSILON;
 
             let (target_zoom, target_pan) = if is_fit_to_screen {
-                let actual_size_zoom = 1.0 / scale;
+                let actual_size_zoom = 1.0 / (scale * ui.ctx().pixels_per_point());
                 if actual_size_zoom >= 1.0 {
                     // Larger than the pane: 1:1 anchored at the click.
                     self.zoom_target(actual_size_zoom / self.zoom, click_pos, &available)
@@ -760,7 +849,7 @@ impl Pane {
         let zoom_factor = pinch * scroll_factor;
 
         if zoom_factor != 1.0 {
-            if let Some(hover_pos) = response.hover_pos() {
+            if let Some(hover_pos) = ui.input(|i| i.multi_touch().map(|g| g.center_pos)).or_else(|| response.hover_pos()) {
                 self.view_animation = None;
                 self.zoom_to(zoom_factor, hover_pos, available);
             }

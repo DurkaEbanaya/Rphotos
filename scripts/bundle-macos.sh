@@ -14,10 +14,10 @@ cd "$(dirname "$0")/.."
 
 if [[ "$PROFILE" == "release" ]]; then
     cargo bundle --release
-    BUNDLE_DIR="target/release/bundle/osx/ViewSkater.app"
+    BUNDLE_DIR="target/release/bundle/osx/Rphotos.app"
 else
     cargo bundle --profile "$PROFILE"
-    BUNDLE_DIR="target/$PROFILE/bundle/osx/ViewSkater.app"
+    BUNDLE_DIR="target/$PROFILE/bundle/osx/Rphotos.app"
 fi
 
 GENERATED_PLIST="$BUNDLE_DIR/Contents/Info.plist"

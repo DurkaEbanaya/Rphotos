@@ -20,6 +20,8 @@ mod build_info;
 mod cache;
 mod decode;
 mod file_io;
+mod identity;
+mod library;
 mod menu;
 mod metadata;
 mod metadata_panel;
@@ -31,10 +33,12 @@ mod settings;
 mod theme;
 mod trash_bin;
 mod view_animation;
+mod viewer;
+mod chrome;
 mod window_state;
 
 #[derive(Parser)]
-#[command(name = "viewskater-egui", about = "Fast image viewer")]
+#[command(name = "rphotos", about = "Local-first cross-platform photo viewer")]
 struct Args {
     /// Paths to image files or directories
     paths: Vec<PathBuf>,
@@ -72,7 +76,7 @@ fn build_wgpu_setup(mode: GpuMemoryMode) -> egui_wgpu::WgpuSetup {
             };
 
             wgpu::DeviceDescriptor {
-                label: Some("viewskater wgpu device"),
+                label: Some("rphotos wgpu device"),
                 required_features: wgpu::Features::default(),
                 required_limits: wgpu::Limits {
                     max_texture_dimension_2d: 8192,
@@ -87,7 +91,7 @@ fn build_wgpu_setup(mode: GpuMemoryMode) -> egui_wgpu::WgpuSetup {
 }
 
 fn load_icon() -> Option<egui::IconData> {
-    static ICON: &[u8] = include_bytes!("../assets/icon_256.png");
+    static ICON: &[u8] = include_bytes!("../assets/rphotos.png");
     let img = image::load_from_memory(ICON).ok()?.into_rgba8();
     let (w, h) = img.dimensions();
     Some(egui::IconData {
@@ -105,7 +109,10 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_drag_and_drop(true)
-        .with_app_id("viewskater-egui");
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_min_inner_size([500.0, 360.0])
+        .with_app_id(identity::APP_ID);
 
     if !window_state::has_persisted_state() {
         viewport = viewport.with_inner_size([1280.0, 720.0]);
@@ -162,7 +169,7 @@ fn main() -> eframe::Result {
     let _ = file_tx;
 
     eframe::run_native(
-        "viewskater-egui",
+        identity::APP_ID,
         options,
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]

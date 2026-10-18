@@ -1,0 +1,40 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - name: Test
+        run: cargo test --locked --all-targets
+      - name: Check optional upstream features
+        run: cargo check --locked --all-features
+      - name: Build portable development artifact
+        run: cargo build --locked --profile opt-dev
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Package development artifact
+        run: python scripts/package.py --profile opt-dev
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rphotos-${{ runner.os }}-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error

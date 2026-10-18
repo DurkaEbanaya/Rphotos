@@ -464,6 +464,7 @@ impl App {
     pub(super) fn handle_external_open_requests(&mut self, ctx: &egui::Context) {
         let current_discovery_options = self.current_discovery_options();
         while let Ok(path) = self.file_receiver.try_recv() {
+            self.library_visible = false;
             log::info!("External open request: {}", path.display());
             self.panes[0].open_path(
                 &path,

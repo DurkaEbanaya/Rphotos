@@ -349,6 +349,13 @@ pub struct ImageSortOrder {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
+    pub language: crate::library::Language,
+    pub appearance: crate::library::Appearance,
+    pub thumbnail_density: u8,
+    /// Optional already-installed local Ollama vision model, never auto-downloaded.
+    pub local_vision_model: String,
+    /// Optional local text embedding model; built only on explicit user request.
+    pub local_embedding_model: String,
     pub show_footer: bool,
     /// Action buttons at the right end of the footer (Move to Trash).
     /// Off for people who use the viewer as a plain reader.
@@ -380,6 +387,11 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            language: crate::library::Language::default(),
+            appearance: crate::library::Appearance::default(),
+            thumbnail_density: 1,
+            local_vision_model: String::new(),
+            local_embedding_model: String::new(),
             show_footer: true,
             show_footer_buttons: true,
             show_fps: true,
@@ -439,7 +451,7 @@ impl SettingsChanges {
 
 impl AppSettings {
     fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("viewskater-egui").join("settings.yaml"))
+        dirs::config_dir().map(|d| d.join(crate::identity::APP_ID).join("settings.yaml"))
     }
 
     pub fn load() -> Self {

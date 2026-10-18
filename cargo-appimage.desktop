@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=ViewSkater
-Exec=viewskater-egui %f
+Name=Rphotos
+Exec=rphotos %f
 Icon=icon
 Type=Application
 Categories=Graphics;Viewer;
-StartupWMClass=viewskater-egui
+StartupWMClass=rphotos
 MimeType=image/jpeg;image/png;image/apng;image/bmp;image/webp;image/gif;image/tiff;image/x-tga;image/qoi;image/x-sony-arw;image/x-canon-cr2;image/x-canon-cr3;image/x-adobe-dng;image/x-kodak-kdc;image/x-nikon-nef;image/x-nikon-nrw;image/x-olympus-orf;image/x-pentax-pef;image/x-fuji-raf;image/x-panasonic-rw2;image/x-sony-sr2;image/x-sony-srf;

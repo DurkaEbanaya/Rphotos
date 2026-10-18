@@ -23,6 +23,9 @@ const MAX_BINARY_BYTES: usize = 64;
 /// Facts about one image file, formatted for display.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct MetadataRecord {
+    /// Upright decoded-source dimensions, before the GPU texture size limit.
+    /// For RAW this describes its embedded preview, not the sensor raster.
+    pub dimensions: Option<[u32; 2]>,
     pub file_size: Option<u64>,
     /// Modification time in local time, "2026-03-27 14:05".
     pub modified: Option<String>,

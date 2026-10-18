@@ -301,6 +301,11 @@ pub(crate) fn paint_nav_slider(
 }
 
 pub struct App {
+    backdrop:crate::platform::backdrop::Backdrop,
+    pub(crate) library_visible: bool,
+    library: crate::library::Library,
+    settings_return_to_viewer:bool,
+    viewer: crate::viewer::Viewer,
     pub(crate) panes: Vec<Pane>,
     pub(crate) perf: perf::ImagePerfTracker,
     pub(crate) divider_fraction: f32,
@@ -348,7 +353,14 @@ impl App {
     ) -> Self {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
+        let mut library=crate::library::Library::new(&cc.egui_ctx);
+        library.restore_scene(cc.storage);
         let mut app = Self {
+            backdrop:crate::platform::backdrop::Backdrop::new(cc),
+            library_visible: paths.is_empty() && !bench_opts.any(),
+            library,
+            settings_return_to_viewer:false,
+            viewer: crate::viewer::Viewer::default(),
             panes: vec![Pane::new(
                 &cc.egui_ctx,
                 settings.cache_count,
@@ -441,6 +453,7 @@ impl App {
     }
 
     fn current_title(&self) -> String {
+        if self.library_visible { return crate::identity::DISPLAY_NAME.into(); }
         let name = |pane: &Pane| -> Option<String> {
             pane.image_paths.get(pane.current_index).map(|path| {
                 path.file_name()
@@ -454,13 +467,13 @@ impl App {
             let left = name(&self.panes[0]).unwrap_or_default();
             let right = name(&self.panes[1]).unwrap_or_default();
             if left.is_empty() && right.is_empty() {
-                "ViewSkater".to_string()
+                crate::identity::DISPLAY_NAME.to_string()
             } else {
                 format!("Left: {} | Right: {}", left, right)
             }
         } else {
             self.panes.first().and_then(name)
-                .unwrap_or_else(|| "ViewSkater".to_string())
+                .unwrap_or_else(|| crate::identity::DISPLAY_NAME.to_string())
         }
     }
 
@@ -767,14 +780,16 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn clear_color(&self,_:&egui::Visuals)->[f32;4]{[0.0;4]}
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.backdrop.update(ctx,self.library_visible);
         // Synchronize with the GPU before building the next frame.
         // Without this, wgpu's multi-stage pipeline (staging buffer → copy →
         // submit → present) can finish at variable times, causing irregular
         // frame spacing during rapid keyboard navigation of 4K images.
         // Blocking here until the previous frame's GPU work completes gives
         // deterministic frame pacing.
-        if let Some(render_state) = frame.wgpu_render_state() {
+        if let Some(render_state) = frame.wgpu_render_state().filter(|_| !self.library_visible && (self.panes.len() > 1 || self.bench.opts.any())) {
             render_state.device.poll(eframe::wgpu::Maintain::Wait);
             self.perf.sample_gpu_memory(&render_state.device);
         }
@@ -821,7 +836,73 @@ impl eframe::App for App {
         }
 
         self.handle_external_open_requests(ctx);
-        self.handle_dropped_files(ctx);
+        self.library.poll(ctx);
+        if self.library_visible {
+            let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+            for file in dropped {
+                if let Some(path) = file.path {
+                    if path.is_dir() { self.library.add_source(path); }
+                    else {
+                        self.panes.truncate(1);
+                        let options = self.current_discovery_options();
+                        self.panes[0].open_path(&path, ctx, options);
+                        self.library_visible = false;
+                    }
+                }
+            }
+        } else { self.handle_dropped_files(ctx); }
+        if self.library_visible {
+            self.update_title(ctx);
+            if let Some(open) = self.library.show_blocked(ctx, &mut self.settings,self.pending_permanent_delete.is_some()) {
+                self.panes.truncate(1);
+                self.panes[0].open_library(open.paths, open.index, ctx);
+                if open.slideshow {self.viewer.start_slideshow(ctx);}
+                self.library_visible = false;
+            }
+            if let Some(paths)=self.library.take_trash(){self.trash_or_confirm(paths,ctx);}
+            if self.settings_return_to_viewer && !self.library.settings_visible(){self.settings_return_to_viewer=false;self.library_visible=false;ctx.request_repaint();}
+            self.show_permanent_delete_modal(ctx);
+            self.paint_toast(ctx);
+            return;
+        }
+        if self.panes.len() == 1 && !self.bench.opts.any() {
+            self.update_title(ctx);
+            let favorite = self.panes[0].image_paths.get(self.panes[0].current_index).is_some_and(|p|self.library.is_favorite(p));
+            ctx.data_mut(|d|d.insert_temp(egui::Id::new("rphotos.viewer.favorite"),favorite));
+            let blocked = self.library.has_dialog() || self.pending_permanent_delete.is_some();
+            match self.viewer.show(ctx, &mut self.panes[0], &mut self.settings, blocked) {
+                crate::viewer::Action::Favorite => {
+                    if let Some(path)=self.panes[0].image_paths.get(self.panes[0].current_index) {
+                        if !self.library.toggle_favorite(path) {self.show_toast(self.settings.language.text("Сначала добавьте папку в библиотеку", "Add this folder to the library first").into(),false);}
+                    }
+                }
+                crate::viewer::Action::Back => { self.close_images(); self.library_visible = true; self.viewer = Default::default(); ctx.request_repaint(); }
+                crate::viewer::Action::AddToAlbum => {
+                    if let Some(path) = self.panes[0].image_paths.get(self.panes[0].current_index) {
+                        if !self.library.add_viewed_to_album(path) { self.show_toast(self.settings.language.text("Сначала добавьте папку в библиотеку", "Add this folder to the library first").into(), false); }
+                    }
+                }
+                crate::viewer::Action::Trash(path) => {
+                    if self.panes[0].image_paths.get(self.panes[0].current_index) == Some(&path) {
+                        self.trash_pane_image(0, ctx);
+                    }
+                }
+                crate::viewer::Action::Compare => self.set_dual_pane(ctx),
+                crate::viewer::Action::Settings=>{self.library.open_settings();self.library_visible=true;self.settings_return_to_viewer=true;}
+                crate::viewer::Action::None => {}
+            }
+            self.library.viewer_dialogs(ctx, &mut self.settings);
+            self.paint_toast(ctx);
+            self.show_permanent_delete_modal(ctx);
+            return;
+        }
+        if !ctx.wants_keyboard_input()
+            && !self.show_settings && !self.show_about && self.pending_permanent_delete.is_none()
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape) && !i.viewport().fullscreen.unwrap_or(false)) {
+            self.close_images();
+            self.library_visible = true;
+            return;
+        }
         if self.bench.nav.is_some() {
             // The benchmark is the keyboard for the duration of the run.
             self.tick_nav_bench(ctx);
@@ -859,7 +940,13 @@ impl eframe::App for App {
         // Menu bar (top) — in fullscreen, revealed when cursor near top edge
         // or when a menu dropdown is open (so user can interact with items)
         let show_menu = !is_fullscreen || cursor_near_top || self.menu_open;
+        crate::chrome::show(ctx, &self.current_title(), None, self.settings.appearance, self.settings.language, false);
         if show_menu {
+            let mut back = false;
+            egui::TopBottomPanel::top("viewer_library_back").show(ctx, |ui| {
+                back = ui.add_sized([140.0, 36.0], egui::Button::new(self.settings.language.text("← Библиотека", "← Library"))).clicked();
+            });
+            if back { self.close_images(); self.library_visible = true; return; }
             let fps_text = if self.settings.show_fps && !is_fullscreen {
                 Some(self.perf.fps_text(cache_mb))
             } else {
@@ -1013,6 +1100,7 @@ impl eframe::App for App {
     /// Called by eframe on exit and at its autosave interval, after it has
     /// written its own entries and before the storage is flushed.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.library.save_scene(storage);
         if let Some(geometry) = self.window_geometry {
             eframe::set_value(
                 storage,

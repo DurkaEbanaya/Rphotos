@@ -30,3 +30,4 @@ benchmarks/
 
 # Internal working notes (local only)
 docs/internal/
+dist/

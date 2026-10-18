@@ -17,7 +17,7 @@ use crate::metadata::{self, ExifData, MetadataRecord};
 use crate::raw;
 use crate::settings::{ImageDiscoveryOptions, ImageSortKey, SortDirection};
 
-const APP_NAME: &str = "viewskater-egui";
+const APP_NAME: &str = crate::identity::APP_ID;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "jxl", "png", "apng", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga",
@@ -208,6 +208,14 @@ pub fn load_image(path: &Path) -> LoadedImage {
         Ok((image, orientation)) => (Ok(image), orientation),
         Err(e) => (Err(e), Orientation::NoTransforms),
     };
+    if let Ok(image) = &image {
+        let (w, h) = (image.width(), image.height());
+        record.dimensions = Some(match orientation {
+            Orientation::Rotate90 | Orientation::Rotate270
+            | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH => [h, w],
+            _ => [w, h],
+        });
+    }
     LoadedImage { image, orientation, record: Arc::new(record) }
 }
 
@@ -454,7 +462,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for BufferLayer {
         // For tracing-log bridged events, metadata.target() is "log";
         // the real target is in the "log.target" field.
         let target = visitor.log_target.as_deref().unwrap_or(metadata.target());
-        if !target.starts_with("viewskater_egui") {
+        if !target.starts_with(crate::identity::LOG_TARGET) {
             return;
         }
 
@@ -494,7 +502,7 @@ pub fn setup_logger() -> Arc<Mutex<VecDeque<String>>> {
     let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(MAX_LOG_LINES)));
 
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("viewskater_egui=info"));
+        .unwrap_or_else(|_| EnvFilter::new(format!("{}=info", crate::identity::LOG_TARGET)));
 
     let buffer_layer = BufferLayer {
         buffer: buffer.clone(),
@@ -670,6 +678,7 @@ mod tests {
         for path in [&jpeg, &png, &trailing] {
             let loaded = load_image(path);
             assert_eq!(loaded.orientation, Orientation::Rotate90, "{}", path.display());
+            assert_eq!(loaded.record.dimensions, Some([2, 3]), "{}", path.display());
             assert!(matches!(loaded.record.exif, ExifData::Present(_)), "{}", path.display());
             let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
             assert_eq!(shown.size, [2, 3], "{}", path.display());
@@ -681,8 +690,21 @@ mod tests {
             .unwrap();
         let loaded = load_image(&plain);
         assert_eq!(loaded.orientation, Orientation::NoTransforms);
+        assert_eq!(loaded.record.dimensions, Some([3, 2]));
         let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
         assert_eq!(shown.size, [3, 2]);
+    }
+
+    #[test]
+    fn recorded_dimensions_are_not_the_downscaled_gpu_texture() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.png");
+        image::RgbImage::new(9000, 2).save(&path).unwrap();
+        let loaded = load_image(&path);
+        assert_eq!(loaded.record.dimensions, Some([9000, 2]));
+        let pixels = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
+        assert_eq!(pixels.size[0], 8192);
+        assert_eq!(loaded.record.dimensions, Some([9000, 2]));
     }
 
     /// A RAW file shows its embedded JPEG, turned by the RAW file's own

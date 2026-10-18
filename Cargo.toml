@@ -1,8 +1,8 @@
 [package]
-name = "viewskater-egui"
-version = "0.4.0"
+name = "rphotos"
+version = "0.1.0-dev"
 edition = "2021"
-description = "Fast image viewer built with egui"
+description = "Local-first cross-platform photo viewer based on ViewSkater"
 license = "MIT OR Apache-2.0"
 
 [features]
@@ -50,12 +50,28 @@ wgpu = { version = "24", default-features = false, features = ["counters"] }
 mimalloc = { version = "0.1", default-features = false }
 trash = "5.2.9"
 kamadak-exif = "0.6.1"
+anyhow = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+tempfile = "3"
+base64 = "0.22"
+notify = "8.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.11.1", default-features = false, features = ["async-std"] }
+pollster = "0.4"
+raw-window-handle = "0.6"
+wayland-client = "0.31.13"
+wayland-backend = { version = "0.3.14", features = ["client_system"] }
+wayland-protocols-plasma = { version = "0.3.11", features = ["client"] }
+wayland-protocols = { version = "0.32.11", features = ["client", "staging"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
 tempfile = "3"
+egui_kittest = { version = "0.31.1", features = ["wgpu"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
@@ -83,13 +99,13 @@ winit = { git = "https://github.com/ggand0/winit.git", branch = "custom-dnd-0.30
 egui-winit = { git = "https://github.com/ggand0/egui-winit-custom.git", branch = "main" }
 
 [package.metadata.appimage]
-icon = "./assets/icon_256.png"
+icon = "./assets/rphotos.png"
 
 [package.metadata.bundle]
-name = "ViewSkater"
-identifier = "com.ggando.viewskater-egui"
-icon = ["assets/ViewSkater.icns"]
-short_description = "A fast image viewer built with egui"
+name = "Rphotos"
+identifier = "org.rphotos.Rphotos"
+icon = ["assets/Rphotos.icns"]
+short_description = "A local-first cross-platform photo viewer"
 # NOTE: cargo-bundle 0.6.1 has no hook for extending the generated Info.plist.
 # scripts/bundle-macos.sh merges resources/macos/Info.plist after bundling to
 # inject CFBundleDocumentTypes.

@@ -314,3 +314,57 @@ fn keyboard_navigation_passes_a_file_that_fails_to_decode() {
     assert_eq!(p.current_index, 0);
     assert!(p.current_texture.is_some());
 }
+
+#[test]
+fn library_open_loads_in_background_and_reopen_discards_old_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.png");
+    let b = dir.path().join("b.png");
+    write_png(&a, 10);
+    write_png(&b, 20);
+    let ctx = egui::Context::default();
+    let mut p = pane(&ctx);
+    p.open_library(vec![b.clone(), a.clone()], 1, &ctx);
+    assert!(p.current_record.is_none(), "open must not decode synchronously");
+    assert!(p.current_texture.is_none());
+    wait_for_decodes(&mut p);
+    assert!(p.current_texture.is_some());
+    assert_eq!(p.image_paths, [b.clone(), a.clone()]);
+    assert_eq!(p.current_index, 1);
+    // Reopening immediately replaces the first background job and its caches.
+    p.open_library(vec![a], 0, &ctx);
+    p.open_library(vec![b.clone()], 99, &ctx);
+    wait_for_decodes(&mut p);
+    assert_eq!(p.image_paths, [b]);
+    assert_eq!(p.current_index, 0);
+    assert!(p.current_texture.is_some());
+    p.close();
+    p.poll_cache();
+    assert!(p.current_record.is_none());
+}
+
+#[test]
+fn background_jump_keeps_only_latest_target_and_native_pixel_zoom() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths: Vec<_> = (0..20).map(|n| {
+        let path = dir.path().join(format!("{n}.png"));
+        write_png(&path, n);
+        path
+    }).collect();
+    let ctx = egui::Context::default();
+    let mut p = pane(&ctx);
+    p.open_library(paths, 0, &ctx);
+    p.jump_background(19, &ctx);
+    p.jump_background(3, &ctx);
+    p.jump_background(15, &ctx);
+    assert_eq!(p.current_index, 15);
+    assert!(p.current_texture.is_none());
+    wait_for_decodes(&mut p);
+    assert!(p.current_texture.is_some());
+    assert_eq!(p.current_index, 15);
+    let rect=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(800.0,600.0));
+    p.actual_size(rect,2.0);
+    let texture=p.current_texture.as_ref().unwrap().size_vec2();
+    let scale=(rect.width()/texture.x).min(rect.height()/texture.y);
+    assert!((p.zoom*scale*2.0-1.0).abs()<0.001);
+}

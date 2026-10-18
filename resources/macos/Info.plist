@@ -21,7 +21,7 @@
         <string>public.jpeg</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -39,7 +39,7 @@
         <string>public.jpeg-xl</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -58,7 +58,7 @@
         <string>public.png</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -76,7 +76,7 @@
         <string>com.compuserve.gif</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -94,7 +94,7 @@
         <string>com.microsoft.bmp</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -113,7 +113,7 @@
         <string>public.tiff</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -131,7 +131,7 @@
         <string>org.webmproject.webp</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -145,7 +145,7 @@
         <string>tga</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -159,7 +159,7 @@
         <string>qoi</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
@@ -192,7 +192,7 @@
         <string>public.camera-raw-image</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string>ViewSkater.icns</string>
+      <string>Rphotos.icns</string>
     </dict>
   </array>
 </dict>

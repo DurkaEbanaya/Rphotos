@@ -38,7 +38,7 @@ pub fn show_about_modal(ctx: &egui::Context, show: &mut bool, theme: &UiTheme) {
                     ui.vertical_centered(|ui| {
                         // Title
                         ui.label(
-                            egui::RichText::new("ViewSkater")
+                            egui::RichText::new(crate::identity::DISPLAY_NAME)
                                 .size(25.0)
                                 .strong(),
                         );
@@ -87,7 +87,11 @@ pub fn show_about_modal(ctx: &egui::Context, show: &mut bool, theme: &UiTheme) {
                         ui.add_space(8.0);
 
                         // Contributors
-                        ui.label(egui::RichText::new("Contributors:").size(15.0));
+                        ui.label(
+                            egui::RichText::new("Based on ViewSkater (MIT / Apache-2.0)")
+                                .size(15.0),
+                        );
+                        ui.label(egui::RichText::new("Upstream contributors:").size(15.0));
                         let contributors = [
                             ("@ggand0", "https://github.com/ggand0"),
                             ("@hml-pip", "https://github.com/hml-pip"),
@@ -140,8 +144,8 @@ pub fn show_about_modal(ctx: &egui::Context, show: &mut bool, theme: &UiTheme) {
                         ui.add_space(4.0);
 
                         // Link
-                        ui.label(egui::RichText::new("Learn more at:").size(15.0));
-                        let link_text = "https://github.com/ggand0/viewskater-egui";
+                        ui.label(egui::RichText::new("Upstream source:").size(15.0));
+                        let link_text = "https://github.com/ggand0/viewskater";
                         if ui
                             .add(
                                 egui::Label::new(

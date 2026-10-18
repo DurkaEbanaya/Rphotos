@@ -1,103 +1,181 @@
-<img src="https://github.com/user-attachments/assets/e48601c5-705a-44c4-8cc7-36f6a6fc422a" alt="Alt text" width="600"/>
+# Rphotos
 
-# ViewSkater
+Кроссплатформенный локальный просмотрщик и фотобиблиотека на Rust.
+Основа — [ViewSkater](https://github.com/ggand0/viewskater), референс интерфейса —
+Photos 2019. Приоритет: Linux, затем Windows и macOS.
 
-A fast, cross-platform image viewer built with Rust and egui. Designed for exploring and comparing large sets of images. Linux, macOS and Windows are supported.
+## Текущий статус
 
-This is the egui port of the original [iced version](https://github.com/ggand0/viewskater-iced).
+Начальная стадия разработки, **не готовый интерфейс Photos 2019**.
+Унаследованы просмотр, декодирование, кеширование, навигация и сравнение снимков
+из ViewSkater. Имя приложения и каталоги настроек отделены от оригинала.
+У приложения собственный значок; SVG и воспроизводимый генератор находятся в репозитории.
 
-## Features
+Первый рабочий сценарий библиотеки:
 
-- Dynamic image caching with background preloading
-- Continuous image rendering via key presses and slider
-- Dual pane view for side-by-side image comparison
-- Scroll-to-zoom centered on cursor, click-drag to pan
-- Fullscreen mode with cursor proximity UI reveal
-- Supports jpg, jxl, png, bmp, webp, gif, tiff, qoi, tga
-- Opens camera RAW files (arw, cr2, cr3, dng, nef, raf, rw2 and more) by showing the JPEG the camera stored inside them
+- добавление папок, рекурсивный фоновый индекс SQLite, обновление и отмена;
+- native watcher источников: изменения объединяются перед фоновым пересканированием;
+- Коллекция по месяцам даты съёмки (fallback — дата файла), виртуализированные строки трёх плотностей;
+- миниатюры по запросу с дисковым кешем и ограниченным GPU-кешем;
+- поиск по имени/пути, распознанному тексту и локальным описаниям; сохранённые запросы;
+- opt-in смысловой поиск по embeddings описаний и автоальбомы похожего содержимого;
+- карточки настоящих альбомов в Коллекции, скрытие рекомендаций и подсказки поиска;
+- избранное в локальном индексе (`is:favorite`, также пункт меню `…`);
+- плитки альбомов, создание через выбор снимков, переименование, обложка,
+  добавление/исключение снимков и удаление альбома **без удаления оригиналов**;
+- Папки: источники и вложенные каталоги, отдельно файлы текущей папки;
+  удаление источника **без удаления файлов**;
+- открытие выбранного снимка в просмотрщике без синхронного декодирования;
+- возврат кнопкой «Назад» в заголовке или Esc; раздел, фильтр и scroll сохраняются
+  между нормальными закрытиями приложения;
+- RU/EN и светлая/тёмная/системная тема библиотеки и одиночного просмотра.
 
-## Download
+Одиночный просмотр теперь использует отдельную Photos-подобную сцену:
+клиентский заголовок 32 px, панель команд 48 px, локальный zoom-popup,
+сведения слева шириной 344 px, боковые зоны перехода,
+кнопка fullscreen снизу справа. Постоянные меню File/View, footer и слайдер
+навигации остаются только в расширенном режиме сравнения.
+Работают стрелки клавиатуры, колесо над фото, Ctrl+колесо, Home/End, I, F11,
+слайд-шоу, добавление в альбом и удаление в корзину с подтверждением.
+Меню `…` также сохраняет точную копию исходного файла (включая metadata),
+копирует файл в clipboard и на Linux вызывает системный «Открыть с помощью»
+через portal. Копия сохраняется только под новым именем, без перезаписи файлов.
+Есть базовый touch-свайп при вписанном фото и pan при увеличении;
+проверены синтетические события, не реальный сенсорный экран.
 
-Builds for Windows, macOS and Linux are on [GitHub Releases](https://github.com/ggand0/viewskater-egui/releases). The official build on [viewskater.com](https://viewskater.com) is the same app with a few extra features.
+Шапка библиотеки теперь имеет фиксированные command/tab-панели по 48 px,
+поиск слева и графические переключатели плотности справа. Выделение заменяет
+обычные команды тёмной панелью; поддерживаются выбор группы и добавление в альбом.
+В узком окне дополнительные команды доступны через `…`, без переноса панели.
 
-Or build from source:
+Галерея раскладывает снимки в строки с учётом пропорций, без подписей под фото.
+Нажатие на заголовок месяца открывает список месяцев; выбор возвращает к группе.
+Справа в широком окне — шкала времени с кликом и перетаскиванием.
+При уточнении пропорций и смене плотности сохраняется привязка к видимому фото.
+Вычисленные пропорции сохраняются в SQLite: знакомые миниатюры не требуют
+повторного уточнения после перезапуска.
 
-```bash
-cargo run --release --features official
+Добавлены полностраничные настройки, уведомления альбомов, контекстные меню,
+пакетная корзина с подтверждением и базовый touch-свайп между разделами.
+Дисковый thumbnail-кеш ограничен 512 MiB; scan/OCR можно отменять и ставить
+на паузу между снимками/пакетами.
+
+Это пока не точная копия Photos: алгоритм строк приблизительный.
+Шапка использует настоящий compositor blur на Wayland с
+`ext-background-effect-v1` или KDE blur protocol; на неподдерживаемой системе
+и без фокуса используется непрозрачный фон. Клиентский заголовок остаётся своим.
+Неподключённые команды редактора отключены.
+Расширенный режим сравнения
+и его настройки пока используют английское upstream-меню.
+Индекс загружается при старте и обновляется в фоне. Native watcher отслеживает
+источники, объединяет изменения за800мс и запускает scan после текущей задачи.
+F5 остаётся ручным fallback для недоступных источников/ограничений OS watcher.
+Хронология и автоальбомы событий используют EXIF-дату съёмки, если она доступна,
+иначе дату изменения файла. EXIF читается фоновым сканером без декодирования
+пикселей, с пределом4MiB; неподдержанные контейнеры и metadata за этим пределом
+используют fallback. Пустые вложенные папки также сохраняются в индексе.
+Полная приёмка на сенсорном устройстве, Windows/macOS blur/print/share,
+проверка качества смыслового поиска и точное воспроизведение всех переходов ещё остаются.
+
+### Печать и локальный анализ
+
+- **Linux Print:** системный XDG Print portal, PDF формируется после подтверждения.
+  Подключение скомпилировано; отправка на реальный принтер пока не проверена.
+- **Поделиться:** собственный диалог Rphotos, не системный Share-flyout.
+  Экспорт PDF, копирование файлов и Linux `xdg-email` с вложениями в черновике.
+  Автоматической отправки нет. Linux file clipboard: `wl-copy` из `wl-clipboard`
+  либо X11/XWayland `xclip` с `text/uri-list`. Адаптеры Windows/macOS добавлены,
+  но на этих ОС пока не проверены. «Копировать путь» остаётся отдельным действием.
+- **Автоальбомы:** явная команда в настройках группирует минимум 3 снимка
+  по датам съёмки с fallback на дату файла, с разрывом до двух дней; отдельная команда группирует
+  похожие embeddings текстовых описаний. Ручные и отредактированные автоальбомы
+  не удаляются при пересборке. Категории/личности людей не определяются.
+- **OCR:** необязательный установленный Tesseract (`rus`/`eng`), один поток CPU,
+  45 секунд на фото. Ничего не устанавливается автоматически.
+- **Содержимое:** необязательный уже установленный vision-модель Ollama.
+  Укажите её имя в настройках и явно запустите анализ; уменьшенные копии идут
+  только на `127.0.0.1:11434` через `curl`, без proxy и без скачивания моделей.
+   Описания RU/EN индексируются как текст; качество описания зависит от модели.
+   OCR и реальная модель на этой машине
+   пока не проверены; проверены адаптеры, mock-сервер и сохранение индекса.
+- **Смысловой поиск:** укажите уже установленную embedding-модель Ollama
+  (например, multilingual `bge-m3`), затем «Построить смысловой индекс».
+  Требуется предварительный OCR или описание содержимого. Введите запрос и
+  выберите `… → Смысловой поиск по этому запросу`. Текст отправляется только
+  на фиксированный localhost, не фотографии; моделей приложение не скачивает.
+  До 100 совпадений с cosine ≥0.3, отображение по датам; изменение запроса
+  возвращает обычный поиск. «Очистить смысловой индекс» позволяет перестроить
+  его после замены модели с тем же именем. В памяти векторы ограничены256MiB.
+  Автоальбомы: сходство с представителем ≥0.75, ≥3 фото, максимум64 группы и
+  10000 фото. Это similarity текстовых описаний, не прямые image embeddings.
+  Проверены нормализация, ранжирование, invalidation, loopback adapter и
+  сохранность альбомов; качество настоящей модели ещё не проверено.
+Требования и этапы: [docs/PRODUCT.md](docs/PRODUCT.md).
+Наблюдения по референсу: [docs/PHOTOS-2019.md](docs/PHOTOS-2019.md).
+Измеренный аудит: [docs/PHOTOS-2019-AUDIT.md](docs/PHOTOS-2019-AUDIT.md).
+Карта продолжения разработки: [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
+Проверки и ограничения: [docs/VERIFICATION.md](docs/VERIFICATION.md).
+
+## Как попробовать
+
+Запустите без аргументов, нажмите «Добавить папку» и дождитесь индексации.
+Щелчок по миниатюре открывает фото; «Выбрать» или Ctrl+щелчок включает выделение.
+«Новый альбом» открывает страницу выбора фотографий; пополнение доступно
+из альбома и через «Добавить в» при выделении.
+Настройки языка и темы находятся в меню `…`.
+
+Клавиатура библиотеки: F5 — обновить, Ctrl+O — выбрать папку,
+Ctrl+1/2/3 — разделы, Ctrl+A — выделить отфильтрованные фото,
+Esc — выйти из фильтра альбома/папки и выделения. На macOS вместо Ctrl — Cmd.
+Поле поиска защищено от горячих клавиш просмотрщика.
+В сетке: стрелки — переход между снимками/строками, Home/End — первый/последний
+с автопрокруткой, Enter — открыть, Space — выделить, Shift+стрелки — расширить
+выделение. Обрабатываются и снимки вне видимой виртуализированной области;
+горячие клавиши не перехватывают ввод в поле поиска и кнопки toolbar.
+
+## Сборка
+
+```sh
+cargo run --release
+cargo run --release -- /path/to/photo.jpg
+RUST_LOG=rphotos=debug cargo run
+cargo test
 ```
 
-To see debug logs:
-```bash
-RUST_LOG=viewskater_egui=debug cargo run --release
+Сборка использует upstream-форки `winit` и `egui-winit`, закреплённые в
+`Cargo.lock`. Первой сборке нужен доступ к crates.io и GitHub.
+
+Локальный portable-архив (без установки/публикации):
+
+```sh
+cargo build --locked --release
+python3 scripts/package.py
 ```
 
-### Linux icon setup
+Архив и SHA-256 появятся в `dist/`. Это development build, не подписанный
+installer/AppImage/macOS `.app`. CI настроен собирать и прикладывать такие
+артефакты для трёх OS; успешные remote builds пока не подтверждены.
+Оригинал значка — `assets/rphotos.svg`; PNG/ICO/ICNS воспроизводятся командой
+`python3 scripts/generate-icons.py` (необязательная build-tool зависимость Pillow).
 
-On GNOME 46+ (Ubuntu 24.04+), the taskbar icon requires installing a `.desktop` file and icon:
+Для локальной интеграции с меню Linux после сборки:
 
-```bash
-mkdir -p ~/.local/share/icons/hicolor/256x256/apps
-cp assets/icon_256.png ~/.local/share/icons/hicolor/256x256/apps/viewskater-egui.png
-gtk-update-icon-cache -f ~/.local/share/icons/hicolor/
-cp assets/viewskater-egui.desktop ~/.local/share/applications/
+```sh
+install -Dm755 target/release/rphotos ~/.local/bin/rphotos
+install -Dm644 assets/rphotos.desktop ~/.local/share/applications/rphotos.desktop
+install -Dm644 assets/rphotos.png ~/.local/share/icons/hicolor/256x256/apps/rphotos.png
 ```
 
-For the AppImage, update the `Exec=` line to point to the AppImage path:
-```bash
-sed -i "s|Exec=.*|Exec=/path/to/viewskater-egui.AppImage %f|" \
-    ~/.local/share/applications/viewskater-egui.desktop
-```
+Репозиторий проекта: [DurkaEbanaya/Rphotos](https://github.com/DurkaEbanaya/Rphotos).
+Development artifacts в GitHub Actions не являются стабильным релизом;
+ссылки на релизы ViewSkater не являются загрузками Rphotos.
 
-## Usage
+## Происхождение и лицензии
 
-Drag and drop an image or a directory of images onto a pane, and navigate through the images using the **A / D** keys or the slider.
-Use the mouse wheel to zoom in/out of an image.
+База: ViewSkater, commit `6ab9bf73ba5443e0cf76e8c78b184d1268da99fc`.
+История Git и авторство сохранены. Код распространяется по MIT OR Apache-2.0:
+[LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
+[Исходный README](docs/UPSTREAM-README.md) сохранён отдельно.
 
-In dual-pane mode (**Ctrl+2** / **Cmd+2**), the slider syncs images in both panes by default.
-
-## Shortcuts
-
-On macOS, use **Cmd** instead of **Ctrl**.
-
-| Input | Action |
-|---|---|
-| A / D or Left / Right arrow | Previous / next image |
-| Hold A / D or arrows | Skate mode (continuous scroll) |
-| Home / End | First / last image |
-| Ctrl+1 / Ctrl+2 | Single / dual pane |
-| Ctrl+O | Open file |
-| Ctrl+Shift+O | Open folder |
-| Delete (also Cmd+Backspace on macOS) | Move the current image to the Trash |
-| Ctrl+W | Close images |
-| Ctrl+Q | Quit |
-| Scroll wheel | Zoom (centered on cursor) |
-| Click + drag | Pan |
-| Double-click | Reset zoom and pan |
-| I | Show or hide the metadata panel |
-| F11 | Toggle fullscreen |
-| Escape | Exit fullscreen |
-
-## Caching and memory usage
-
-ViewSkater caches decoded images in RAM for smooth rendering. Both caches are adjustable in Preferences.
-
-| Cache | Purpose | Default | Setting |
-|---|---|---|---|
-| Sliding window | Preloads neighbors for instant keyboard navigation | 5 images ahead/behind | Cache Size |
-| LRU decode | Stores visited images for smooth slider scrubbing | 1024 MB budget | LRU Budget (MB) |
-
-Decoded pixels are much larger than compressed files on disk (e.g. a 10 MB PNG at 3840×2160 becomes ~32 MB as raw RGBA), so higher-resolution images use more cache per entry. Current memory usage is shown in the FPS overlay.
-
-## Contributing
-
-Contributions are accepted under MIT or Apache 2.0 and ship in every build. A few features are behind the `official` cargo feature. If your PR improves one of them, that change ships only in the official build, though official features may move to the GitHub Releases builds over time. The source is in this repo, so you can build it yourself. Anyone whose PR is merged gets the official build (email viewskater@ggando.me).
-
-## License
-
-ViewSkater is licensed under either of
-- Apache License, Version 2.0
-  ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license
-  ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
+Скриншоты с личного устройства и пользовательские фотографии в репозиторий
+и релизные архивы не включаются. Ресурсы Microsoft из референса не копируются.

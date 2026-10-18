@@ -24,7 +24,7 @@ pub const EFRAME_WINDOW_KEY: &str = "window";
 /// first launch, when the window gets the default size. The id is the app
 /// id `main` gives eframe.
 pub fn has_persisted_state() -> bool {
-    eframe::storage_dir("viewskater-egui")
+    eframe::storage_dir(crate::identity::APP_ID)
         .map(|d| d.join("app.ron").exists())
         .unwrap_or(false)
 }
