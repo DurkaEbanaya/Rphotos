@@ -8,7 +8,7 @@
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 166 passed, 0 failed, 7 ignored |
+| `cargo test --locked --all-targets` | 167 passed, 0 failed, 7 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |
@@ -37,6 +37,11 @@ Kittest: full-page picker/settings и album lifecycle, настоящие album 
 Hide/Show, dropdown сохранённого поиска, pager axis-lock/vertical escape и
 блокировка открытия фото во время свайпа. Локальные OCR/vision adapters проверены
 fake Tesseract и loopback HTTP mock; реальные движки не установлены.
+
+Model privacy preflight: проверены отказ cloud aliases, nested remote_host/model,
+отсутствующих/неверных capabilities и отмена до network request. Worker проверяет
+metadata до передачи фото или текста; старый сервер без capabilities отклоняется.
+Не является защитой от заведомо недоверенного proxy, выдающего себя за local Ollama.
 
 Дерево папок: пустые/nested каталоги, dedup overlapping sources, restart,
 offline/cancel preservation и удаление только source associations. Kittest открывает

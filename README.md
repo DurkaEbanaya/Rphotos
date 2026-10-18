@@ -4,6 +4,14 @@
 Основа — [ViewSkater](https://github.com/ggand0/viewskater), референс интерфейса —
 Photos 2019. Приоритет: Linux, затем Windows и macOS.
 
+[![Build and test](https://github.com/DurkaEbanaya/Rphotos/actions/workflows/ci.yml/badge.svg)](https://github.com/DurkaEbanaya/Rphotos/actions/workflows/ci.yml)
+
+![Коллекция Rphotos](docs/screenshots/collection-light.png)
+
+Снимок настоящего offscreen GPU-render приложения на синтетических изображениях,
+не макет. Это не демонстрация compositor blur или качества распознавания.
+[Альбомы](docs/screenshots/albums.png) · [Просмотрщик](docs/screenshots/viewer-light.png)
+
 ## Текущий статус
 
 Начальная стадия разработки, **не готовый интерфейс Photos 2019**.
@@ -94,7 +102,10 @@ F5 остаётся ручным fallback для недоступных исто
   45 секунд на фото. Ничего не устанавливается автоматически.
 - **Содержимое:** необязательный уже установленный vision-модель Ollama.
   Укажите её имя в настройках и явно запустите анализ; уменьшенные копии идут
-  только на `127.0.0.1:11434` через `curl`, без proxy и без скачивания моделей.
+   только на `127.0.0.1:11434` через `curl`, без proxy и без скачивания моделей.
+   Перед передачей данных `/api/show` должен подтвердить capability модели;
+   облачные aliases и `remote_host`/`remote_model` отклоняются. Нужен локальный
+   Ollama с metadata capabilities; доверять произвольному локальному proxy нельзя.
    Описания RU/EN индексируются как текст; качество описания зависит от модели.
    OCR и реальная модель на этой машине
    пока не проверены; проверены адаптеры, mock-сервер и сохранение индекса.

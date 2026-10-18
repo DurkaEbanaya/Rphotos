@@ -120,6 +120,9 @@ impl Worker {
                             Ok(vec![])
                         }
                         Command::Embed(ticket, model) => {
+                            super::analysis::ensure_local_model(&model, "embedding", || {
+                                cancel.load(Ordering::Relaxed) != ticket
+                            })?;
                             super::semantic::index(
                                 &db,
                                 &model,
@@ -133,6 +136,9 @@ impl Worker {
                             Ok(vec![])
                         }
                         Command::SemanticSearch(ticket, model, query) => {
+                            super::analysis::ensure_local_model(&model, "embedding", || {
+                                cancel.load(Ordering::Relaxed) != ticket
+                            })?;
                             matches = Some(super::semantic::search(&db, &model, query, || {
                                 cancel.load(Ordering::Relaxed) != ticket
                             })?);
@@ -153,6 +159,9 @@ impl Worker {
                             unreachable!("handled without emitting a scene snapshot")
                         }
                         Command::Describe(ticket, model) => {
+                            super::analysis::ensure_local_model(&model, "vision", || {
+                                cancel.load(Ordering::Relaxed) != ticket
+                            })?;
                             let photos = store::snapshot(&db)?.photos;
                             let mut warnings = Vec::new();
                             for (n, photo) in photos.iter().enumerate() {

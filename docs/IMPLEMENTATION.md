@@ -185,6 +185,11 @@ Windows/macOS adapters/builds, реальные touch/print/OCR/model, EXIF cont
 приёмка watcher на больших/сетевых библиотеках, content albums/vector search
 на реальной модели, release packaging.
 
+Privacy preflight: worker перед Describe/Embed/SemanticSearch проверяет `/api/show`
+без фото/текста. Cloud-name suffix и непустые remote_host/remote_model отвергаются,
+capabilities vision/embedding обязательны (fail closed для старого сервера).
+Это защита от стандартных cloud-backed aliases, не sandbox чужого local proxy.
+
 ## Проверки и инфраструктура
 
 `cargo test --locked --all-targets`, `cargo check --locked --all-features`,

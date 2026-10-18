@@ -903,7 +903,8 @@ mod tests {
         );
         assert_ne!(
             cache_key(path, 1, UNIX_EPOCH),
-            cache_key(path, 1, UNIX_EPOCH + std::time::Duration::from_nanos(1))
+            // Windows SystemTime is quantized to 100 ns, unlike Unix timespec.
+            cache_key(path, 1, UNIX_EPOCH + std::time::Duration::from_nanos(100))
         );
     }
 

@@ -7,6 +7,54 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A loopback address alone does not guarantee local inference: Ollama can route
+/// cloud-backed model aliases remotely. Inspect metadata before sending data.
+pub(super) fn ensure_local_model(
+    model: &str,
+    capability: &str,
+    cancel: impl Fn() -> bool,
+) -> Result<()> {
+    if model.trim().is_empty() || model.len() > 200 {
+        bail!("Choose an already-installed local model");
+    }
+    let name = model.trim().to_ascii_lowercase();
+    if name.ends_with(":cloud") || name.ends_with("-cloud") {
+        bail!("Cloud models are not allowed for the private photo index");
+    }
+    let data = request_json(
+        &serde_json::json!({"model": model.trim(), "verbose": false}),
+        "http://127.0.0.1:11434/api/show",
+        cancel,
+    )?;
+    validate_local_model(&data, capability)
+}
+
+fn validate_local_model(bytes: &[u8], capability: &str) -> Result<()> {
+    fn remote(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(fields) => fields.iter().any(|(key, value)| {
+                (matches!(key.as_str(), "remote_host" | "remote_model")
+                    && !value.is_null()
+                    && value.as_str() != Some(""))
+                    || remote(value)
+            }),
+            serde_json::Value::Array(values) => values.iter().any(remote),
+            _ => false,
+        }
+    }
+    let data: serde_json::Value = serde_json::from_slice(bytes)?;
+    if data.get("error").is_some() || remote(&data) {
+        bail!("Model is unavailable or cloud-backed; choose a local model");
+    }
+    if !data["capabilities"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(capability)))
+    {
+        bail!("Local model does not advertise the required {capability} capability; check the model and Ollama version");
+    }
+    Ok(())
+}
+
 pub fn languages() -> Result<Vec<String>> {
     let output = Command::new("tesseract")
         .arg("--list-langs")
@@ -201,6 +249,25 @@ fn parse_description(bytes: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_model_preflight_rejects_cloud_and_wrong_capabilities() {
+        assert!(
+            validate_local_model(br#"{"capabilities":["vision","completion"]}"#, "vision").is_ok()
+        );
+        assert!(validate_local_model(br#"{"capabilities":["embedding"]}"#, "embedding").is_ok());
+        for bytes in [
+            br#"{"capabilities":["vision"],"remote_host":"https://remote.invalid"}"#.as_slice(),
+            br#"{"capabilities":["vision"],"details":{"remote_model":"cloud-alias"}}"#.as_slice(),
+            br#"{"capabilities":["completion"]}"#.as_slice(),
+            br#"{}"#.as_slice(),
+        ] {
+            assert!(validate_local_model(bytes, "vision").is_err());
+        }
+        // Rejected without contacting any server, even if one happens to run.
+        assert!(ensure_local_model("example:cloud", "vision", || false).is_err());
+        assert!(ensure_local_model("example-cloud", "embedding", || false).is_err());
+        assert!(ensure_local_model("local", "vision", || true).is_err());
+    }
     #[test]
     fn description_response_validation() {
         assert_eq!(parse_description(br#"{"response":"cat"}"#).unwrap(), "cat");

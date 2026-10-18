@@ -31,3 +31,5 @@ benchmarks/
 # Internal working notes (local only)
 docs/internal/
 dist/
+__pycache__/
+*.pyc
