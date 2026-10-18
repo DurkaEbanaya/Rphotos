@@ -186,7 +186,7 @@ Search dropdown — saved queries и bounded vocabulary из OCR/descriptions, �
 отдельно, доступно из viewer/context menu и через `is:favorite`.
 
 **Оставшийся backlog:** точный встроенный album picker и modal geometry, system Share,
-Windows/macOS adapters/builds, реальные touch/print/OCR/model, EXIF container coverage,
+Windows/macOS native adapters, реальные touch/print/OCR/model, EXIF container coverage,
 приёмка watcher на больших/сетевых библиотеках, content albums/vector search
 на реальной модели, release packaging.
 
@@ -217,12 +217,23 @@ README/license/verification/Cargo.lock и dependency notices в tar.gz/zip + SHA
 Strict allowlist: никаких settings/index/captures/credentials. Dependency inventory
 консервативно включает все targets/dev и тексты из crates, включая font OFL/UFL;
 76 crates не содержат отдельного license file — отмечены с source/repository URL.
-Это не полный юридический аудит или стабильный release. Нативные зависимости OS
-и source-offer obligations перед публичным релизом требуют отдельной проверки.
+Это не полный юридический аудит или стабильный release; нативные зависимости OS
+и полнота license obligations требуют отдельной проверки перед stable release.
 CI делает opt-dev builds + upload artifact для3OS. Репозиторий опубликован:
 https://github.com/DurkaEbanaya/Rphotos . Первый remote run скомпилировал macOS,
 но обнаружил различие `/var`→`/private/var` в test expectations; fixtures приведены
-к canonical paths, как и настоящий индекс. Результаты следующего run фиксировать
-в VERIFICATION, не выдавать compile за нативную приёмку.
+к canonical paths, как и настоящий индекс. Полный run39169792775 (`d089114`)
+успешен на Linux x86_64/Windows x64/macOS ARM64, включая tests, all-features,
+opt-dev build, package regression и upload artifacts. Не выдавать CI за нативную приёмку.
 `python3 scripts/test_package.py` проверяет3OS archive branches на синтетических
 входах: strict allowlist, SHA256, font/MPL notices и отсутствие архива при missing input.
+
+Development Preview1 опубликован как prerelease `v0.1.0-dev.1` из проверенного CI
+commit `d089114`; три OS archives + SHA256. Скачанные archives перепроверены по
+checksum/binary digest/clean source provenance; Linux CI binary по5с library/viewer
+smoke. Он не включает последующий main-only aspect-query performance fix.
+
+Scale probe100k metadata: выявил correlated aspect query с повторным обходом photos;
+замена на IN materialized keys без миграции схемы. Debug snapshot~422ms/layout~173ms,
+warm CPU frames~0.4ms без GPU submit/original decode. Это не реальная large-library
+приёмка; test opt-in и query-plan regression описаны в VERIFICATION.

@@ -594,6 +594,115 @@ mod tests {
         (temp, source, database)
     }
 
+    /// Opt-in, metadata-only scale probe. No original images or model engines
+    /// are needed; timings are observations, not machine-independent budgets.
+    #[test]
+    #[ignore = "100k-photo scale probe; run explicitly with --nocapture"]
+    fn large_library_scale_probe() {
+        use std::time::Instant;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("synthetic");
+        std::fs::create_dir(&source).unwrap();
+        let source = source.canonicalize().unwrap();
+        let database = temp.path().join("data/library.sqlite3");
+        let mut db = store::connect(&database).unwrap();
+        store::add_source(&db, &source).unwrap();
+        let started = Instant::now();
+        {
+            let tx = db.transaction().unwrap();
+            let mut photos = tx.prepare("INSERT INTO photos VALUES(?,?,?,?)").unwrap();
+            let mut links = tx.prepare("INSERT INTO source_photos VALUES(1,?)").unwrap();
+            let mut aspects = tx
+                .prepare("INSERT INTO thumbnail_aspects VALUES(?,?)")
+                .unwrap();
+            for id in 1..=100_000_i64 {
+                let path = source.join(format!("photo-{id:06}.jpg"));
+                #[cfg(unix)]
+                let bytes = {
+                    use std::os::unix::ffi::OsStrExt;
+                    path.as_os_str().as_bytes().to_vec()
+                };
+                #[cfg(windows)]
+                let bytes = {
+                    use std::os::windows::ffi::OsStrExt;
+                    path.as_os_str()
+                        .encode_wide()
+                        .flat_map(u16::to_le_bytes)
+                        .collect::<Vec<_>>()
+                };
+                let key = format!("{id:064x}");
+                photos
+                    .execute(rusqlite::params![
+                        id,
+                        bytes,
+                        1_792_324_800_i64 - id * 300,
+                        key
+                    ])
+                    .unwrap();
+                links.execute([id]).unwrap();
+                aspects
+                    .execute(rusqlite::params![
+                        key,
+                        if id % 3 == 0 { 0.667 } else { 1.6 }
+                    ])
+                    .unwrap();
+            }
+            drop((photos, links, aspects));
+            tx.commit().unwrap();
+        }
+        let insert_ms = started.elapsed().as_secs_f64() * 1000.0;
+        println!("100k metadata insertion: {insert_ms:.2}ms; loading snapshot");
+        let started = Instant::now();
+        let state = store::snapshot(&db).unwrap();
+        let snapshot_ms = started.elapsed().as_secs_f64() * 1000.0;
+        println!("100k snapshot: {snapshot_ms:.2}ms; building layout");
+        assert_eq!(state.photos.len(), 100_000);
+        assert_eq!(state.aspects.len(), 100_000);
+        drop(db);
+        let ctx = egui::Context::default();
+        let mut library = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        library.thumbnails.restore_aspects(&state.aspects);
+        library.state = state;
+        library.ready = true;
+        let started = Instant::now();
+        library.rebuild_rows(1260.0, 1);
+        let layout_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(library.filtered.len(), 100_000);
+        let rows = library.rows.len();
+        let mut settings = AppSettings::default();
+        let mut times = Vec::new();
+        let mut max_shapes = 0;
+        for _ in 0..60 {
+            let started = Instant::now();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1500.0, 960.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    let _ = library.show(ctx, &mut settings);
+                },
+            );
+            max_shapes = max_shapes.max(output.shapes.len());
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+            assert!(library.thumbnails.pending_count() <= 24);
+        }
+        assert!(
+            max_shapes < 1000,
+            "offscreen photos must not become widgets/shapes"
+        );
+        times.sort_by(f64::total_cmp);
+        library.query = "photo-099999".into();
+        let started = Instant::now();
+        library.rebuild_rows(1260.0, 1);
+        let search_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(library.filtered.len(), 1);
+        println!("100k metadata probe: insert_ms={insert_ms:.2}, snapshot_ms={snapshot_ms:.2}, layout_ms={layout_ms:.2}, rows={rows}, warm_frame_p50_ms={:.2}, warm_frame_p95_ms={:.2}, max_shapes={max_shapes}, search_ms={search_ms:.2}", times[30], times[57]);
+    }
+
     #[test]
     fn empty_folders_are_navigable_in_library_and_album_picker() {
         use egui_kittest::kittest::Queryable;

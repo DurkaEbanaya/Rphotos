@@ -8,7 +8,7 @@
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 168 passed, 0 failed, 7 ignored |
+| `cargo test --locked --all-targets` | 169 passed, 0 failed, 8 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |
@@ -219,15 +219,27 @@ Linux архива извлечён и запущен5с в isolated XDG без 
 
 Remote CI выявил и помог исправить две платформенные ошибки тестов:
 macOS canonical `/private/var` вместо alias `/var`, Windows SystemTime precision
-100ns вместо1ns. Тесты не отключались. Исправленные Linux/macOS tests и
-all-features checks прошли; новый run для Windows/optimized artifacts ещё выполняется.
+100ns вместо1ns. Тесты не отключались. Полные runs39168800751 (`06d7821`) и
+39169792775 (`d089114`) успешны на всех трёх ОС: tests, all-features checks,
+opt-dev build, Python archive regression, package и upload artifacts.
+Последний run: https://github.com/DurkaEbanaya/Rphotos/actions/runs/39169792775 .
 
-- Windows/macOS локально не собирались; compilation на GitHub runners прошла,
-  окончательные результаты последнего CI фиксируются отдельно после завершения.
+- Windows/macOS локально не собирались; tests/build/package на GitHub runners
+  прошли. Настоящий GUI workflow на пользовательском устройстве этим не принят.
 - Реальные touch/pinch/swipe (в отличие от синтетических событий), клавиатурная доступность всей сетки и
   screen-reader workflow ещё не проверены.
-- Нет замеров на библиотеке в десятки/сотни тысяч файлов. Сетка рисует только
-  видимые строки; полный снимок индекса всё ещё загружается в память.
+- Metadata-only scale probe на100000 synthetic записей: snapshot422ms, layout173ms,
+  filename search14ms; warm CPU frame p50/p950.37/0.39ms, максимум78 paint shapes.
+  Это debug build на этой машине,60 кадров без GPU submit и декодирования оригиналов,
+  не обещание скорости настоящей библиотеки/диска. Первый прогон был остановлен
+  после95с: correlated aspect query заменён на materialized key set; повтор завершился
+  за1.72с целиком. Query-plan regression запрещает correlated photo scan.
+  Воспроизведение: `cargo test --locked large_library_scale_probe -- --ignored --nocapture`.
+  Полный snapshot остаётся в памяти; реальный scan/decode/RSS/network volumes не замерены.
+
+  Scale probe — восьмой opt-in ignored test, выполнен отдельно и прошёл.
+  Последующий query-plan regression входит в обычные169 tests. Preview1 собран из
+  `d089114` до этой оптимизации; performance fix находится в следующем main commit.
 - Есть ограниченные очереди, один thumbnail-декодер, LRU128 GPU-текстур и квота
   дискового кеша512MiB. Не проверены adaptive load и прерывание уже начатого decode.
 - Print/Email/file clipboard требуют native workflow проверки; OCR/Ollama quality,

@@ -6,6 +6,9 @@ Photos 2019. Приоритет: Linux, затем Windows и macOS.
 
 [![Build and test](https://github.com/DurkaEbanaya/Rphotos/actions/workflows/ci.yml/badge.svg)](https://github.com/DurkaEbanaya/Rphotos/actions/workflows/ci.yml)
 
+[Скачать Development Preview 1 — Linux / Windows / macOS](https://github.com/DurkaEbanaya/Rphotos/releases/tag/v0.1.0-dev.1).
+Это предварительная сборка, не stable release; сначала прочтите [ограничения](docs/PREVIEW.md).
+
 ![Коллекция Rphotos](docs/screenshots/collection-light.png)
 
 Снимок настоящего offscreen GPU-render приложения на синтетических изображениях,
@@ -168,7 +171,9 @@ python3 scripts/package.py
 
 Архив и SHA-256 появятся в `dist/`. Это development build, не подписанный
 installer/AppImage/macOS `.app`. CI настроен собирать и прикладывать такие
-артефакты для трёх OS; успешные remote builds пока не подтверждены.
+артефакты для трёх OS. Remote CI для `d089114` прошёл на Linux x86_64,
+Windows x64 и macOS ARM64: tests, all-features check, optimized build и упаковка.
+Это не заменяет ручную приёмку native UI/печати/touch на каждой ОС.
 Оригинал значка — `assets/rphotos.svg`; PNG/ICO/ICNS воспроизводятся командой
 `python3 scripts/generate-icons.py` (необязательная build-tool зависимость Pillow).
 

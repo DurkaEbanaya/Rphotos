@@ -9,6 +9,10 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
+// Materialize the photo key set once. A correlated EXISTS can rescan photos
+// for every aspect on SQLite versions without a transient covering index.
+const ASPECTS_QUERY: &str = "SELECT cache_key,aspect FROM thumbnail_aspects WHERE cache_key IN (SELECT cache_key FROM photos)";
+
 #[derive(Clone, Debug)]
 pub struct Photo {
     pub id: i64,
@@ -353,12 +357,18 @@ pub fn snapshot(db: &Connection) -> Result<Snapshot> {
         let (id,text)=row?;if let Some(&i)=positions.get(&id){photos[i].text.push('\n');photos[i].text.push_str(&text);}
     }
     Ok(Snapshot {
-        directories: db.prepare("SELECT DISTINCT path FROM source_directories ORDER BY path")?
+        directories: db
+            .prepare("SELECT DISTINCT path FROM source_directories ORDER BY path")?
             .query_map([], |r| Ok(bytes_path(r.get(0)?)))?
             .collect::<rusqlite::Result<_>>()?,
-        favorites: db.prepare("SELECT photo_id FROM favorites")?.query_map([],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?,
-        aspects: db.prepare("SELECT a.cache_key,a.aspect FROM thumbnail_aspects a WHERE EXISTS(SELECT 1 FROM photos p WHERE p.cache_key=a.cache_key)")?
-            .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?,
+        favorites: db
+            .prepare("SELECT photo_id FROM favorites")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?,
+        aspects: db
+            .prepare(ASPECTS_QUERY)?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?,
         sources,
         photos,
         albums,
@@ -687,6 +697,36 @@ pub fn scan(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn aspect_snapshot_materializes_keys_without_correlated_photo_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = connect(&temp.path().join("library.sqlite3")).unwrap();
+        db.execute(
+            "INSERT INTO photos VALUES(1,x'61',0,'shared'),(2,x'62',0,'shared')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO thumbnail_aspects VALUES('shared',1.5),('stale',0.5)",
+            [],
+        )
+        .unwrap();
+        let state = snapshot(&db).unwrap();
+        assert_eq!(state.aspects.len(), 1);
+        assert_eq!(state.aspects["shared"], 1.5);
+        let details = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {ASPECTS_QUERY}"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            details.iter().all(|detail| !detail.contains("CORRELATED")),
+            "{details:?}"
+        );
+    }
+
     use super::*;
     use std::sync::atomic::AtomicU64;
     use std::time::UNIX_EPOCH;
