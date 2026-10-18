@@ -8,7 +8,7 @@
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 167 passed, 0 failed, 7 ignored |
+| `cargo test --locked --all-targets` | 168 passed, 0 failed, 7 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |
@@ -37,6 +37,14 @@ Kittest: full-page picker/settings и album lifecycle, настоящие album 
 Hide/Show, dropdown сохранённого поиска, pager axis-lock/vertical escape и
 блокировка открытия фото во время свайпа. Локальные OCR/vision adapters проверены
 fake Tesseract и loopback HTTP mock; реальные движки не установлены.
+
+Pager regression проверяет две одновременно нарисованные реальные сцены,
+координаты disabled соседнего tile, сохранность filtered collection, переход
+Collection→Albums→Folders и отсутствие wrap на краю. Release сохраняет исходную
+позицию страницы перед snap; layout/scroll/focus preview не заменяют текущую сцену.
+GPU capture `section-swipe` дополнительно фиксирует промежуточный кадр.
+Короткий swipe, TouchCancel и открытие modal не переключают tab; snap возвращается
+в нулевой offset и не оставляет скрытую блокировку кликов.
 
 Model privacy preflight: проверены отказ cloud aliases, nested remote_host/model,
 отсутствующих/неверных capabilities и отмена до network request. Worker проверяет
@@ -82,7 +90,8 @@ guard и сохранение старого destination при decode error. `p
 прочитал synthetic двухстраничный A4 PDF1.4. Настоящий Print dialog/job не проверен.
 File clipboard: тестируется URI escaping, включая Unicode, `%`, `#`, newline и
 не-UTF-8 пути. Автотесты не меняют системный clipboard пользователя. Windows
-FileDropList/macOS aliases написаны, но не собраны/приняты на соответствующих ОС.
+FileDropList/macOS aliases скомпилированы remote CI; нативный clipboard workflow
+на этих ОС ещё не принят.
 Save copy: byte-exact, original/symlink guard, no-clobber любого существующего
 destination, отсутствие частичного результата при ошибке. Меню viewer проверяет,
 что Escape сначала закрывает overflow и не покидает просмотр; Home/End под меню
@@ -187,26 +196,34 @@ selection EN500×700. На них проверены высоты панелей
 
 ## Ограничения проверки
 
-Текущие GPU captures: `/tmp/opencode/rphotos-current-captures`, 17 сцен библиотеки
+Текущие GPU captures: `/tmp/opencode/rphotos-pager-captures`, 18 сцен библиотеки
 и5 viewer (светлая/тёмная/narrow/HiDPI, cards/search, albums/detail/picker/folders/
 settings, selection, zoom/info). Оба capture-теста пройдены; ключевые PNG прочитаны
 визуально. Это synthetic изображения, не личные фотографии и не proof pixel-perfect.
 
-Нативный smoke `/tmp/opencode/rphotos-current-smoke-49tgb5tx`: library/viewer
+Нативный smoke `/tmp/opencode/rphotos-pager-smoke-kkokls13`: library/viewer
 по5с без раннего выхода. Отдельный EXT blur smoke подтвердил подключение протокола
 и alpha190 только в шапке; цветной backdrop, focus/resize переходы ещё не приняты.
 Wayland blur не тестируется offscreen kittest и не заявлен для Windows/macOS/X11.
 
-Packaging: scripts/package.py проверен на настоящем Linux debug binary;
-tar.gz12 entries, SHA256 перепроверен независимо, пути relative без traversal,
+Packaging: scripts/package.py проверен на настоящих Linux debug/opt-dev binaries;
+исходный tar.gz12 entries, SHA256 перепроверен независимо, пути relative без traversal,
 нет credentials/settings/index/private captures. В archive dependency inventory
 и license texts из crates, font OFL/UFL и MPL option-ext. Это предварительный
 license inventory, не полный юридический аудит (76 crates без отдельного license
 file отмечены source URLs). Собственные PNG/ICO/ICNS сгенерированы; PNG просмотрен.
-Windows ZIP/macOS packaging и remote CI ещё не выполнены.
+В актуальный формат добавлены PREVIEW/связанные docs и BUILD-INFO.json (commit,
+profile, OS/arch, binary SHA256, dirty flag при упаковке). Python regression
+проверяет22 Linux /21 Windows/macOS entries на synthetic inputs. Binary из
+Linux архива извлечён и запущен5с в isolated XDG без раннего выхода.
 
-- Windows/macOS локально не собирались; CI-конфигурация подготовлена,
-  удалённых результатов ещё нет.
+Remote CI выявил и помог исправить две платформенные ошибки тестов:
+macOS canonical `/private/var` вместо alias `/var`, Windows SystemTime precision
+100ns вместо1ns. Тесты не отключались. Исправленные Linux/macOS tests и
+all-features checks прошли; новый run для Windows/optimized artifacts ещё выполняется.
+
+- Windows/macOS локально не собирались; compilation на GitHub runners прошла,
+  окончательные результаты последнего CI фиксируются отдельно после завершения.
 - Реальные touch/pinch/swipe (в отличие от синтетических событий), клавиатурная доступность всей сетки и
   screen-reader workflow ещё не проверены.
 - Нет замеров на библиотеке в десятки/сотни тысяч файлов. Сетка рисует только

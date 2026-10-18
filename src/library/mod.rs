@@ -299,6 +299,7 @@ impl Library {
                 self.catalog.notice = Some(id);
             }
             if let Some(state) = update.snapshot {
+                self.invalidate_pager_preview();
                 self.watcher
                     .roots(state.sources.iter().map(|s| s.path.clone()).collect());
                 if !self.watch_initial_refresh {
@@ -1207,6 +1208,13 @@ mod tests {
                 Appearance::Light,
             ),
             (
+                "section-swipe",
+                [900.0, 760.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
                 "preferences",
                 [1100.0, 900.0],
                 1.0,
@@ -1310,6 +1318,22 @@ mod tests {
                     "thumbnail capture did not settle"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if name == "section-swipe" {
+                for (phase, x) in [
+                    (egui::TouchPhase::Start, 700.0),
+                    (egui::TouchPhase::Move, 330.0),
+                ] {
+                    harness.input_mut().events.push(egui::Event::Touch {
+                        device_id: egui::TouchDeviceId(1),
+                        id: egui::TouchId(1),
+                        phase,
+                        pos: egui::pos2(x, 300.0),
+                        force: None,
+                    });
+                    harness.run_steps(1);
+                }
+                assert_eq!(harness.state().0.pager.adjacent, Some(1));
             }
             let image = harness.render().expect("offscreen render failed");
             image.save(output.join(format!("{name}.png"))).unwrap();
@@ -1658,6 +1682,7 @@ mod tests {
 
     #[test]
     fn section_touch_pager_locks_axis_and_blocks_photo_open() {
+        use egui_kittest::kittest::Queryable;
         let (temp, _, database) = fixture();
         let ctx = egui::Context::default();
         let mut lib = Library::with_paths(&ctx, database, temp.path().join("cache"));
@@ -1694,12 +1719,20 @@ mod tests {
         h.run_steps(1);
         assert!(h.state().0.pager.offset < -200.0);
         assert!(h.state().2.is_none());
+        // Both real scenes are painted while dragging; neighboring controls
+        // cannot start a picker or steal the gesture.
+        let adjacent = h.get_by_label("+ Новый альбом");
+        assert!(adjacent.is_disabled());
+        let rect = adjacent.raw_bounds().unwrap();
+        assert!(rect.x0 >= 640.0 && rect.x0 < 900.0, "{rect:?}");
+        let filtered = h.state().0.filtered.clone();
+        assert_eq!(filtered.len(), 18, "preview must not replace grid state");
         h.input_mut()
             .events
             .push(touch(egui::TouchPhase::End, 450.0, 304.0));
         h.run_steps(2);
         assert!(h.state().0.section == Section::Albums);
-        assert!(h.state().2.is_none());
+        assert!(h.state().0.pager.offset > 0.0);
         h.run_steps(45);
         h.input_mut().events.extend([
             touch(egui::TouchPhase::Start, 700.0, 300.0),
@@ -1708,6 +1741,30 @@ mod tests {
         ]);
         h.run_steps(2);
         assert!(h.state().0.section == Section::Albums);
+        for (phase, x) in [
+            (egui::TouchPhase::Start, 700.0),
+            (egui::TouchPhase::Move, 400.0),
+            (egui::TouchPhase::End, 400.0),
+        ] {
+            h.input_mut().events.push(touch(phase, x, 300.0));
+            h.run_steps(1);
+        }
+        assert!(h.state().0.section == Section::Folders);
+        h.run_steps(45);
+        for (phase, x) in [
+            (egui::TouchPhase::Start, 700.0),
+            (egui::TouchPhase::Move, 400.0),
+            (egui::TouchPhase::End, 400.0),
+        ] {
+            h.input_mut().events.push(touch(phase, x, 300.0));
+            h.run_steps(1);
+        }
+        assert!(
+            h.state().0.section == Section::Folders,
+            "no wrap at last tab"
+        );
+        assert!(h.state().0.pager.adjacent.is_none());
+        assert!(h.state().2.is_none());
     }
 }
 #[test]

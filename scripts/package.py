@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Package an already-built native binary, without publishing/installing anything.
 
-Run after cargo build --release (or --profile opt-dev). Requires Python 3 only.
+Run after cargo build --release (or --profile opt-dev). Requires Python 3.11+.
 Archives are portable build artifacts, not signed installers/AppImage/.app bundles.
 """
 import argparse

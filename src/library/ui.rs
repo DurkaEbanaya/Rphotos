@@ -304,6 +304,7 @@ impl Library {
                     .inner_margin(egui::Margin::symmetric(0, 16)),
             )
             .show(ctx, |ui| {
+                self.pager_preview(ui, settings, &t, margin);
                 ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(ui.max_rect().translate(egui::vec2(pager_offset, 0.0))),
@@ -311,6 +312,7 @@ impl Library {
                         if modal_open || self.pager.consumed {
                             ui.disable();
                         }
+                        ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
                         if self.content_search.query == self.query
                             && self.content_search.hits.is_some()
                         {
@@ -326,20 +328,7 @@ impl Library {
                                 }
                             });
                         }
-                        if self.section == Section::Albums && self.album.is_none() {
-                            self.albums(ui, lang, &t, margin);
-                        } else if self.section == Section::Folders {
-                            let has_folder = self.folder.is_some();
-                            self.folders(ui, lang, &t, margin);
-                            if has_folder {
-                                opened = self.gallery(ui, settings, &t, margin);
-                            }
-                        } else {
-                            if self.album.is_some() {
-                                self.album_heading(ui, lang, &t, margin);
-                            }
-                            opened = self.gallery(ui, settings, &t, margin);
-                        }
+                        opened = self.section_content(ui, settings, &t, margin);
                     },
                 );
             });
@@ -365,6 +354,31 @@ impl Library {
             settings.save();
         }
         opened
+    }
+
+    pub(super) fn section_content(
+        &mut self,
+        ui: &mut egui::Ui,
+        settings: &AppSettings,
+        tokens: &Tokens,
+        margin: f32,
+    ) -> Option<OpenPhoto> {
+        let lang = settings.language;
+        if self.section == Section::Albums && self.album.is_none() {
+            self.albums(ui, lang, tokens, margin);
+        } else if self.section == Section::Folders {
+            let has_folder = self.folder.is_some();
+            self.folders(ui, lang, tokens, margin);
+            if has_folder {
+                return self.gallery(ui, settings, tokens, margin);
+            }
+        } else {
+            if self.album.is_some() {
+                self.album_heading(ui, lang, tokens, margin);
+            }
+            return self.gallery(ui, settings, tokens, margin);
+        }
+        None
     }
 
     pub(super) fn dialogs(

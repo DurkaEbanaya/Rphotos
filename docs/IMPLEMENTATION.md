@@ -171,8 +171,13 @@ Backdrop: guest Wayland connection из raw handles, EXT protocol с capability
 tracking, fallback KDE, область только80px library/32px viewer, inactive opaque.
 Windows/macOS/X11 пока opaque. EXT подключение подтверждено native smoke на KDE;
 проверка цветного backdrop/focus/resize с compositor ещё остаётся.
-Pager axis lock/vertical escape/cancel проверен synthetic events; настоящий
-touch, inertia и показ двух соседних страниц одновременно ещё не приняты.
+Pager axis lock/vertical escape/cancel проверен synthetic events. Во время свайпа
+рисуются обе настоящие соседние сцены, без screenshot/дополнительного scanner:
+layout/scroll/focus preview изолированы, hit targets заблокированы (egui пока
+применяет стандартный disabled tint во время перехода).
+При release позиции непрерывны, затем exponential snap; крайние tabs не зациклены.
+Vertical gallery drag с inertia и viewer pinch проверены synthetic60fps events;
+настоящий touchscreen и поведение при разных скоростях/масштабах ещё не приняты.
 
 Collection cards открывают настоящие альбомы, Hide/Show сохраняется в scene.
 Карточки прокручиваются вместе с сеткой, не занимают фиксированную область.
@@ -196,7 +201,7 @@ capabilities vision/embedding обязательны (fail closed для ста�
 `cargo build --locked`; capture: `RPHOTOS_CAPTURE_DIR=/tmp/opencode/... cargo test
 --locked capture_ -- --ignored --nocapture`. Только новые файлы rustfmt;
 upstream имеет несвязанные отклонения глобального fmt. Ничего не сбрасывать:
-проект содержит незакоммиченные изменения предыдущих этапов.
+перед изменениями проверять git status и сохранять чужую работу.
 
 Референсный helper на Windows остановлен и удалён; он **не активен**.
 SSH — через amude-lan jump, не напрямую. При новом исследовании использовать
