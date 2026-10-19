@@ -129,7 +129,7 @@ fn at<R>(ui: &mut egui::Ui, rect: Rect, f: impl FnOnce(&mut egui::Ui) -> R) -> R
     .inner
 }
 
-fn density(ui: &mut egui::Ui, value: u8, current: &mut u8, lang: Language, t: &Tokens) {
+fn density(ui: &mut egui::Ui, value: u8, current: &mut u8, lang: Language, t: &Tokens) -> bool {
     let label = match value {
         0 => lang.text("Крупные миниатюры", "Large thumbnails"),
         1 => lang.text("Средние миниатюры", "Medium thumbnails"),
@@ -163,9 +163,11 @@ fn density(ui: &mut egui::Ui, value: u8, current: &mut u8, lang: Language, t: &T
             Stroke::new(2.0_f32, t.accent),
         );
     }
-    if response.on_hover_text(label).clicked() {
+    let clicked = response.on_hover_text(label).clicked();
+    if clicked {
         *current = value;
     }
+    clicked
 }
 
 impl Library {
@@ -184,6 +186,7 @@ impl Library {
         let mut menu_open = false;
         let mut focused_search = None;
         egui::TopBottomPanel::top("library_commands")
+            .show_separator_line(false)
             .exact_height(48.0)
             .frame(egui::Frame::NONE.fill(if selecting {
                 Color32::from_gray(51)
@@ -281,8 +284,16 @@ impl Library {
                         {
                             self.cancel_selection();
                         }
-                        ui.menu_button("…", |ui| {
+                        ui.spacing_mut().menu_margin=egui::Margin::symmetric(0,4);
+                        ui.visuals_mut().menu_corner_radius=egui::CornerRadius::ZERO;
+                        ui.visuals_mut().window_fill=if ui.visuals().dark_mode {Color32::from_gray(40)} else {Color32::from_gray(242)};
+                        ui.visuals_mut().window_stroke=Stroke::new(1.0_f32,Color32::from_gray(if ui.visuals().dark_mode {75}else{205}));
+                        super::icons::overflow(ui, |ui| {
                             menu_open = true;
+                            // Photos command flyout: flat 32px rows, icon gutter,
+                            // pale-gray surface and restrained square border.
+                            ui.set_min_width(216.0);
+                            ui.spacing_mut().item_spacing.y=0.0;
                             if ui.button(lang.text("Выбрать всё", "Select all")).clicked()
                             {
                                 self.select_all();
@@ -451,7 +462,11 @@ impl Library {
                         {
                             self.pick_source(ctx);
                         }
-                        ui.menu_button("…", |ui| {
+                        ui.spacing_mut().menu_margin=egui::Margin::symmetric(0,4);
+                        ui.visuals_mut().menu_corner_radius=egui::CornerRadius::ZERO;
+                        ui.visuals_mut().window_fill=if ui.visuals().dark_mode {Color32::from_gray(40)} else {Color32::from_gray(242)};
+                        ui.visuals_mut().window_stroke=Stroke::new(1.0_f32,Color32::from_gray(if ui.visuals().dark_mode {75}else{205}));
+                        super::icons::overflow(ui, |ui| {
                             menu_open = true;
                             if narrow {
                                 if ui.button(lang.text("Новый альбом", "New album")).clicked()
@@ -468,25 +483,31 @@ impl Library {
                                 }
                                 ui.separator();
                             }
-                            if ui
-                                .button(lang.text("Обновить · F5", "Refresh · F5"))
-                                .clicked()
+                            if super::icons::menu_item(ui,lang.text("Обновить · F5", "Refresh · F5"),super::icons::Icon::Refresh).clicked()
                             {
                                 self.refresh();
                                 ui.close_menu();
                             }
-                            if ui.button(lang.text("Настройки", "Settings")).clicked() {
+                            if super::icons::menu_item(ui,lang.text("Слайд-шоу", "Slideshow"),super::icons::Icon::Slideshow).clicked() {
+                                self.catalog.slideshow=true;
+                                ui.close_menu();
+                            }
+                            if super::icons::menu_item(ui,lang.text("Настройки", "Settings"),super::icons::Icon::Settings).clicked() {
                                 self.settings_open = true;
                                 ui.close_menu();
                             }
-                            if ui.button(lang.text("Избранное", "Favorites")).clicked() {
-                                self.query = "is:favorite".into();
-                                self.section = Section::Collection;
-                                self.album = None;
-                                self.folder = None;
-                                ui.close_menu();
-                            }
-                            if ui.add_enabled(!self.scanning && !self.query.trim().is_empty() && !settings.local_embedding_model.trim().is_empty(), egui::Button::new(lang.text("Смысловой поиск по этому запросу", "Semantic search for this query"))).clicked() {
+                            ui.separator();
+                            if ui.add_enabled(!self.state.photos.is_empty()&&!self.thumbnails.bulk_status().running,egui::Button::new(lang.text("Прогрузить все миниатюры", "Cache all thumbnails"))).on_hover_text(lang.text("Вся библиотека. Дисковый кеш без ограничения; потребуется дополнительное место. Оригиналы не изменяются.","Entire library. Unlimited disk cache; requires additional disk space. Originals are unchanged.")).clicked(){
+                                settings.thumbnail_disk_gib=0;self.thumbnails.disk_quota(0);
+                                self.thumbnails.configure(settings.thumbnail_workers);
+                                 self.thumbnails.build_all(&self.state.photos);
+                                 ui.memory_mut(|m|m.close_popup());
+                             }
+                             if ui.button(lang.text("Ошибки кеша миниатюр", "Thumbnail cache errors")).clicked() {
+                                 self.cache_errors_open = true;
+                                 ui.memory_mut(|m|m.close_popup());
+                             }
+                            if !self.query.trim().is_empty() && ui.add_enabled(!self.scanning && !settings.local_embedding_model.trim().is_empty(), egui::Button::new(lang.text("Смысловой поиск по этому запросу", "Semantic search for this query"))).clicked() {
                                 let ticket = self.worker.ticket();
                                 self.scanning = true;
                                 self.section = Section::Collection;
@@ -500,12 +521,7 @@ impl Library {
                                 self.layout_key = None;
                                 ui.close_menu();
                             }
-                            if ui
-                                .add_enabled(
-                                    !self.query.trim().is_empty(),
-                                    egui::Button::new(lang.text("Сохранить поиск", "Save search")),
-                                )
-                                .clicked()
+                            if !self.query.trim().is_empty() && ui.button(lang.text("Сохранить поиск", "Save search")).clicked()
                             {
                                 self.send(super::Command::SaveQuery(
                                     self.query.chars().take(120).collect(),
@@ -513,7 +529,8 @@ impl Library {
                                 ));
                                 ui.close_menu();
                             }
-                            for search in self.state.searches.clone() {
+                            let has_query=!self.query.trim().is_empty();
+                            for search in self.state.searches.clone().into_iter().filter(|_| has_query) {
                                 if ui
                                     .button(format!(
                                         "{}: {}",
@@ -551,53 +568,77 @@ impl Library {
                         pos2(r.right() - margin - 87.0, r.bottom()),
                     ),
                     |ui| {
-                        for (section, title) in [
-                            (Section::Collection, lang.text("Коллекция", "Collection")),
-                            (Section::Albums, lang.text("Альбомы", "Albums")),
-                            (Section::Folders, lang.text("Папки", "Folders")),
-                        ] {
-                            if selecting && self.section != section {
-                                continue;
-                            }
-                            let galley = ui.painter().layout_no_wrap(
-                                title.into(),
-                                egui::FontId::proportional(20.0),
-                                t.text,
-                            );
-                            let (rect, response) = ui.allocate_exact_size(
-                                vec2(galley.size().x + 24.0, 48.0),
-                                Sense::click(),
-                            );
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    ui.is_enabled(),
-                                    title,
-                                )
-                            });
-                            let text_pos =
-                                pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
-                            let text_width = galley.size().x;
-                            ui.painter().galley(text_pos, galley, t.text);
-                            if self.section == section {
-                                ui.painter().hline(
-                                    rect.left()..=rect.left() + text_width,
-                                    rect.bottom() - 3.0,
-                                    Stroke::new(2.0_f32, t.accent),
+                        egui::ScrollArea::horizontal()
+                            .id_salt("section_tabs_scroll")
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                            )
+                            .max_height(48.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Min),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                        for (section, title) in [
+                                            (
+                                                Section::Collection,
+                                                lang.text("Коллекция", "Collection"),
+                                            ),
+                                            (Section::Albums, lang.text("Альбомы", "Albums")),
+                                            (Section::Folders, lang.text("Папки", "Folders")),
+                                            (
+                                                Section::Favorites,
+                                                lang.text("Избранное", "Favorites"),
+                                            ),
+                                        ] {
+                                            if selecting && self.section != section {
+                                                continue;
+                                            }
+                                            let galley = ui.painter().layout_no_wrap(
+                                                title.into(),
+                                                egui::FontId::proportional(20.0),
+                                                t.text,
+                                            );
+                                            let (rect, response) = ui.allocate_exact_size(
+                                                vec2(galley.size().x + 24.0, 48.0),
+                                                Sense::click(),
+                                            );
+                                            response.widget_info(|| {
+                                                egui::WidgetInfo::labeled(
+                                                    egui::WidgetType::Button,
+                                                    ui.is_enabled(),
+                                                    title,
+                                                )
+                                            });
+                                            let text_pos = pos2(
+                                                rect.left(),
+                                                rect.center().y - galley.size().y / 2.0,
+                                            );
+                                            let text_width = galley.size().x;
+                                            ui.painter().galley(text_pos, galley, t.text);
+                                            if self.section == section {
+                                                ui.painter().hline(
+                                                    rect.left()..=rect.left() + text_width,
+                                                    rect.bottom() - 3.0,
+                                                    Stroke::new(2.0_f32, t.accent),
+                                                );
+                                            }
+                                            if response.clicked() && !selecting {
+                                                self.section = section;
+                                                self.semantic_zoom = false;
+                                                self.scroll_offset = 0.0;
+                                                self.scroll_anchor = None;
+                                                self.album = None;
+                                                self.folder = None;
+                                            }
+                                        }
+                                    },
                                 );
-                            }
-                            if response.clicked() && !selecting {
-                                self.section = section;
-                                self.semantic_zoom = false;
-                                self.scroll_offset = 0.0;
-                                self.scroll_anchor = None;
-                                self.album = None;
-                                self.folder = None;
-                            }
-                        }
+                            });
                     },
                 );
-                if self.section == Section::Collection
+                if matches!(self.section, Section::Collection | Section::Favorites)
                     || self.album.is_some()
                     || self.folder.is_some()
                 {
@@ -609,7 +650,9 @@ impl Library {
                         ),
                         |ui| {
                             for value in 0..=2 {
-                                density(ui, value, &mut settings.thumbnail_density, lang, t);
+                                if density(ui, value, &mut settings.thumbnail_density, lang, t) {
+                                    settings.thumbnail_size = 0.0;
+                                }
                             }
                         },
                     );

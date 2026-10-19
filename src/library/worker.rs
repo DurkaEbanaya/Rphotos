@@ -6,6 +6,17 @@ use std::sync::{mpsc, Arc};
 
 use super::store::{self, Snapshot};
 
+fn presentation_snapshot(db: &rusqlite::Connection) -> anyhow::Result<Snapshot> {
+    let mut state = store::snapshot(db)?;
+    state.unavailable = state
+        .photos
+        .iter()
+        .filter(|photo| !super::thumbnails::original_available(&photo.path, &photo.key))
+        .map(|photo| photo.key.clone())
+        .collect();
+    Ok(state)
+}
+
 pub enum Command {
     Favorite(i64),
     Aspects(Vec<(String, f32)>),
@@ -43,6 +54,8 @@ pub struct Worker {
     pub results: mpsc::Receiver<Update>,
     generation: Arc<AtomicU64>,
     pub progress: Arc<AtomicUsize>,
+    /// MAX while discovering; MAX-1 for jobs without a filesystem denominator.
+    pub total: Arc<AtomicUsize>,
     paused: Arc<AtomicBool>,
 }
 
@@ -54,6 +67,8 @@ impl Worker {
         let cancel = generation.clone();
         let progress = Arc::new(AtomicUsize::new(0));
         let scanned_count = progress.clone();
+        let total = Arc::new(AtomicUsize::new(usize::MAX - 1));
+        let scan_total = total.clone();
         let paused = Arc::new(AtomicBool::new(false));
         let pause = paused.clone();
         std::thread::spawn(move || {
@@ -71,7 +86,7 @@ impl Worker {
                     return;
                 }
             };
-            let initial = store::snapshot(&db);
+            let initial = presentation_snapshot(&db);
             let _ = output.send(match initial {
                 Ok(snapshot) => Update {
                     matches: None,
@@ -260,13 +275,35 @@ impl Worker {
                             store::remove_query(&db, id)?;
                             Ok(vec![])
                         }
-                        Command::Refresh(ticket) => store::scan(&mut db, &cancel, ticket, |n| {
-                            scanned_count.store(n, Ordering::Relaxed);
+                        Command::Refresh(ticket) => {
+                            scan_total.store(usize::MAX, Ordering::Relaxed);
                             wake();
-                            wait_pause(&pause, &cancel, ticket);
-                        }),
+                            let total = store::count_images(&db, &cancel, ticket, |n| {
+                                scanned_count.store(n, Ordering::Relaxed);
+                                wake();
+                                wait_pause(&pause, &cancel, ticket);
+                            })?;
+                            scanned_count.store(0, Ordering::Relaxed);
+                            scan_total.store(total, Ordering::Relaxed);
+                            wake();
+                            store::scan(&mut db, &cancel, ticket, |n| {
+                                scanned_count.store(n, Ordering::Relaxed);
+                                wake();
+                                wait_pause(&pause, &cancel, ticket);
+                            })
+                        }
                         Command::AddSource(path, ticket) => {
                             store::add_source(&db, &path)?;
+                            scan_total.store(usize::MAX, Ordering::Relaxed);
+                            wake();
+                            let total = store::count_images(&db, &cancel, ticket, |n| {
+                                scanned_count.store(n, Ordering::Relaxed);
+                                wake();
+                                wait_pause(&pause, &cancel, ticket);
+                            })?;
+                            scanned_count.store(0, Ordering::Relaxed);
+                            scan_total.store(total, Ordering::Relaxed);
+                            wake();
                             store::scan(&mut db, &cancel, ticket, |n| {
                                 scanned_count.store(n, Ordering::Relaxed);
                                 wake();
@@ -314,7 +351,7 @@ impl Worker {
                     Ok(_) => None,
                     Err(e) => Some(format!("{e:#}")),
                 };
-                let snapshot = store::snapshot(&db);
+                let snapshot = presentation_snapshot(&db);
                 let update = match snapshot {
                     Ok(snapshot) => Update {
                         matches,
@@ -342,6 +379,7 @@ impl Worker {
             results,
             generation,
             progress,
+            total,
             paused,
         }
     }
@@ -349,6 +387,7 @@ impl Worker {
     pub fn ticket(&self) -> u64 {
         self.paused.store(false, Ordering::Relaxed);
         self.progress.store(0, Ordering::Relaxed);
+        self.total.store(usize::MAX - 1, Ordering::Relaxed);
         self.generation.fetch_add(1, Ordering::Relaxed) + 1
     }
 

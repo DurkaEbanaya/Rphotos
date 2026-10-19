@@ -47,6 +47,12 @@ impl Library {
             })
             .unwrap_or(0);
         if direction == Key::Enter {
+            if self
+                .thumbnails
+                .unavailable(&self.state.photos[self.filtered[current]])
+            {
+                return None;
+            }
             return Some(self.open(self.filtered[current]));
         }
         if direction == Key::Space {

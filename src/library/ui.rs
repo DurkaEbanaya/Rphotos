@@ -4,7 +4,7 @@
 
 use std::sync::atomic::Ordering;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32};
 
 use super::{Appearance, Command, Language, Library, OpenPhoto, Section};
 use crate::settings::AppSettings;
@@ -83,17 +83,11 @@ impl Tokens {
         style.visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
         style.spacing.interact_size.y = 36.0;
         style.spacing.button_padding = egui::vec2(12.0, 8.0);
+        // Keep a usable drag target even when content is millions of points tall.
+        style.spacing.scroll.handle_min_length = 64.0;
+        style.spacing.scroll.bar_width = 12.0;
         ctx.set_style(style);
     }
-}
-
-fn button(ui: &mut egui::Ui, label: &str) -> bool {
-    ui.add(
-        egui::Button::new(label)
-            .frame(false)
-            .min_size(egui::vec2(40.0, 40.0)),
-    )
-    .clicked()
 }
 
 impl Library {
@@ -111,19 +105,27 @@ impl Library {
         let lang = settings.language;
         let t = Tokens::new(settings.appearance, ctx);
         t.apply(ctx);
+        self.thumbnails.disk_quota(settings.thumbnail_disk_gib);
         let before = (
             settings.language,
             settings.appearance,
             settings.thumbnail_density,
+            settings.thumbnail_size,
+            settings.thumbnail_workers,
+            settings.thumbnail_disk_gib,
             settings.mouse_wheel_zoom,
             settings.local_vision_model.clone(),
             settings.local_embedding_model.clone(),
         );
+        let scale_before = settings.thumbnail_size;
+        if !external_modal {
+            self.grid_scale_input(ctx, settings);
+        }
         let mut opened = None;
-        let width = ctx.screen_rect().width();
-        let margin = if width >= 1000.0 { 120.0 } else { 16.0 };
+        let margin = 16.0;
 
         let modal_open = external_modal
+            || self.cache_errors_open
             || self.create_album_open
             || self.assign_album_open
             || self.remove_source.is_some()
@@ -176,6 +178,9 @@ impl Library {
                     settings.language,
                     settings.appearance,
                     settings.thumbnail_density,
+                    settings.thumbnail_size,
+                    settings.thumbnail_workers,
+                    settings.thumbnail_disk_gib,
                     settings.mouse_wheel_zoom,
                     settings.local_vision_model.clone(),
                     settings.local_embedding_model.clone(),
@@ -236,6 +241,8 @@ impl Library {
                     Some(Section::Albums)
                 } else if i.key_pressed(egui::Key::Num3) {
                     Some(Section::Folders)
+                } else if i.key_pressed(egui::Key::Num4) {
+                    Some(Section::Favorites)
                 } else {
                     None
                 }
@@ -258,41 +265,44 @@ impl Library {
         self.notice(ctx, lang, &t);
 
         if self.scanning {
-            egui::TopBottomPanel::bottom("library_status").show(ctx, |ui| {
-                if modal_open {
-                    ui.disable();
-                }
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{}: {}",
-                            lang.text("Фотографий", "Photos"),
-                            self.state.photos.len()
-                        ))
-                        .color(t.muted),
-                    );
-                    ui.spinner();
-                    ui.label(format!(
-                        "{}: {}",
-                        lang.text("Обработка", "Processing"),
-                        self.worker.progress.load(Ordering::Relaxed)
-                    ));
-                    if button(ui, lang.text("Остановить", "Stop")) {
-                        self.worker.cancel();
-                        self.scanning = false;
+            egui::TopBottomPanel::bottom("library_status")
+                .exact_height(48.0)
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    if modal_open {
+                        ui.disable();
                     }
-                    if button(
+                    let action = super::cache_status::scan(
                         ui,
-                        if self.worker.paused() {
-                            lang.text("Продолжить", "Resume")
-                        } else {
-                            lang.text("Пауза", "Pause")
-                        },
-                    ) {
-                        self.worker.toggle_pause();
+                        self.worker.progress.load(Ordering::Relaxed),
+                        self.worker.total.load(Ordering::Relaxed),
+                        self.worker.paused(),
+                        lang,
+                        &t,
+                        margin,
+                    );
+                    match action {
+                        super::cache_status::Action::Stop => {
+                            self.worker.cancel();
+                            self.scanning = false;
+                        }
+                        super::cache_status::Action::Pause => self.worker.toggle_pause(),
+                        _ => {}
                     }
                 });
-            });
+        }
+        let cache = self.thumbnails.bulk_status();
+        if cache.total > 0 {
+            egui::TopBottomPanel::bottom("thumbnail_build_status")
+                .exact_height(48.0)
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    if modal_open {
+                        ui.disable();
+                    }
+                    let action = super::cache_status::show(ui, cache, lang, &t, margin);
+                    self.cache_task_action(action);
+                });
         }
 
         self.pager(ctx, 128.0, modal_open);
@@ -346,12 +356,35 @@ impl Library {
                 settings.language,
                 settings.appearance,
                 settings.thumbnail_density,
+                settings.thumbnail_size,
+                settings.thumbnail_workers,
+                settings.thumbnail_disk_gib,
                 settings.mouse_wheel_zoom,
                 settings.local_vision_model.clone(),
                 settings.local_embedding_model.clone(),
             )
         {
-            settings.save();
+            if settings.thumbnail_size != scale_before
+                && ctx.input(|i| (i.zoom_delta() - 1.0).abs() > 0.0001)
+            {
+                ctx.data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new("library.grid.save_after"),
+                        std::time::Instant::now(),
+                    )
+                });
+            } else {
+                settings.save();
+            }
+        }
+        let save_id = egui::Id::new("library.grid.save_after");
+        if let Some(last) = ctx.data(|d| d.get_temp::<std::time::Instant>(save_id)) {
+            if last.elapsed() >= std::time::Duration::from_millis(500) {
+                settings.save();
+                ctx.data_mut(|d| d.remove::<std::time::Instant>(save_id));
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            }
         }
         opened
     }
@@ -388,6 +421,31 @@ impl Library {
         lang: Language,
     ) {
         self.catalog_dialogs(ctx, lang);
+        if self.cache_errors_open {
+            let failures = self.thumbnails.failures();
+            let mut close = false;
+            let response = egui::Modal::new(egui::Id::new("thumbnail_errors")).show(ctx, |ui| {
+                ui.set_width((ctx.screen_rect().width() - 48.0).clamp(240.0, 1000.0));
+                ui.heading(lang.text("Ошибки кеша миниатюр", "Thumbnail cache errors"));
+                ui.label(lang.text("Отчёт хранится локально. Исходные фотографии не изменены.", "The report stays local. Original photos are unchanged."));
+                ui.label(self.thumbnails.directory().join("last-build-errors.json").to_string_lossy());
+                if failures.is_empty() { ui.label(lang.text("Записанных ошибок пока нет. Для старой прогрузки без отчёта повторите команду кеширования.", "No recorded errors yet. For older builds without a report, run caching again.")); }
+                egui::ScrollArea::vertical().auto_shrink([false,true]).max_height((ctx.screen_rect().height() - 230.0).max(100.0)).show(ui, |ui| {
+                    for (i,error) in failures.iter().enumerate() {
+                        ui.push_id(i, |ui| {
+                            ui.label(egui::RichText::new(error.path.file_name().unwrap_or_default().to_string_lossy()).strong());
+                            ui.add(egui::Label::new(error.path.to_string_lossy()).wrap());
+                            ui.add(egui::Label::new(&error.reason).wrap());
+                            if i+1<failures.len() { ui.separator(); }
+                        });
+                    }
+                });
+                close = ui.button(lang.text("Закрыть", "Close")).clicked();
+            });
+            if close || response.should_close() {
+                self.cache_errors_open = false;
+            }
+        }
 
         if self.create_album_open {
             let mut save = false;

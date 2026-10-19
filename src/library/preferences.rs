@@ -11,7 +11,21 @@ impl Library {
         t: &Tokens,
     ) {
         let lang = settings.language;
-        let blocked = self.remove_source.is_some() || self.error.is_some();
+        let blocked =
+            self.remove_source.is_some() || self.error.is_some() || self.cache_errors_open;
+        let status = self.thumbnails.bulk_status();
+        if status.total > 0 {
+            egui::TopBottomPanel::bottom("preferences_cache_status")
+                .exact_height(48.0)
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    if blocked {
+                        ui.disable();
+                    }
+                    let action = super::cache_status::show(ui, status, lang, t, 24.0);
+                    self.cache_task_action(action);
+                });
+        }
         egui::TopBottomPanel::top("preferences_heading")
             .exact_height(64.0)
             .frame(
@@ -30,7 +44,7 @@ impl Library {
                     egui::Frame::NONE.inner_margin(24).show(ui, |ui| {
                         ui.set_max_width(532.0);
                         ui.spacing_mut().item_spacing.y = 12.0;
-                        ui.heading(lang.text("Источники", "Sources"));
+                         super::icons::heading(ui,lang.text("Источники", "Sources"),super::icons::Icon::Folder);
                         ui.label(lang.text("Выберите папки, фотографии из которых будут показаны в коллекции.", "Choose folders whose photos appear in Collection."));
                         for source in self.state.sources.clone() {
                             ui.label(source.path.to_string_lossy());
@@ -40,22 +54,30 @@ impl Library {
                         }
                         if ui.button(lang.text("Добавить папку", "Add folder")).clicked() { self.pick_source(ctx); }
                         ui.add_space(20.0);
-                        ui.heading("Язык / Language");
+                         super::icons::heading(ui,"Язык / Language",super::icons::Icon::Language);
                         ui.radio_value(&mut settings.language, Language::Ru, "Русский");
                         ui.radio_value(&mut settings.language, Language::En, "English");
                         ui.add_space(20.0);
-                        ui.heading(lang.text("Оформление", "Appearance"));
+                         super::icons::heading(ui,lang.text("Оформление", "Appearance"),super::icons::Icon::Theme);
                         ui.radio_value(&mut settings.appearance, Appearance::Light, lang.text("Светлое", "Light"));
                         ui.radio_value(&mut settings.appearance, Appearance::Dark, lang.text("Тёмное", "Dark"));
                         ui.radio_value(&mut settings.appearance, Appearance::System, lang.text("Как в системе", "Use system setting"));
                         ui.add_space(20.0);
-                        ui.heading(lang.text("Колесо мыши", "Mouse wheel"));
+                         super::icons::heading(ui,lang.text("Колесо мыши", "Mouse wheel"),super::icons::Icon::Mouse);
                         ui.radio_value(&mut settings.mouse_wheel_zoom, false, lang.text("Следующее / предыдущее изображение", "View next or previous item"));
                         ui.radio_value(&mut settings.mouse_wheel_zoom, true, lang.text("Увеличение и уменьшение", "Zoom in and out"));
-                        ui.label(lang.text("Ctrl + колесо всегда меняет масштаб.", "Ctrl + wheel always zooms."));
+                         ui.label(lang.text("Ctrl + колесо всегда меняет масштаб.", "Ctrl + wheel always zooms."));
+                         ui.add_space(20.0);
+                         super::icons::heading(ui,lang.text("Предзагрузка миниатюр", "Thumbnail preloading"),super::icons::Icon::Analysis);
+                         ui.horizontal(|ui|{ui.label(lang.text("Потоки (0 — автоматически)","Workers (0 — automatic)"));ui.add(egui::DragValue::new(&mut settings.thumbnail_workers).range(0..=24));});
+                         ui.add_enabled_ui(!self.thumbnails.bulk_status().running,|ui|{ui.horizontal(|ui|{ui.label(lang.text("Дисковый кеш, ГиБ (0 — без ограничения)","Disk cache, GiB (0 — unlimited)"));ui.add(egui::DragValue::new(&mut settings.thumbnail_disk_gib).range(0..=4096));});});
+                          ui.label(format!("{}: {}",lang.text("Каталог кеша","Cache directory"),self.thumbnails.directory().display()));
+                          ui.label(lang.text("Полная прогрузка: главное меню «… → Прогрузить все миниатюры». Кеш сохраняется после перезапуска; команда отключает его дисковый лимит. Для полного размера по-прежнему нужен оригинал.","Full caching: main menu … → Cache all thumbnails. Cache survives restart; the command disables its disk limit. Full-size viewing still needs the original."));
+                          ui.label(lang.text("Миниатюры хранятся сжатыми PNG между запусками. Недоступный оригинал скрывает превью, но не удаляет его кеш. Неиспользованные 90 дней превью удаляются; при превышении квоты — самые старые, кроме использованных за последние 7 дней.","Compressed PNG previews persist between sessions. Unavailable originals hide previews without deleting their cache. Previews unused for 90 days expire; over quota, the oldest are removed except those used in the past 7 days."));
+                         ui.label(lang.text("Видимый экран — первым, до восьми экранов вперёд и трёх назад. Расширенный кеш сохраняет недавно просмотренные фото. Авто использует число CPU-потоков минус один (до 16); вручную — до 24. Крупные оригиналы декодируются последовательно для ограничения памяти. На HDD меньше потоков может быть быстрее.","Visible screen first, up to eight screens ahead and three behind. The expanded cache retains recently viewed photos. Auto uses CPU threads minus one (up to 16); manual up to 24. Large originals decode sequentially to limit memory. Fewer workers can be faster on HDD."));
                         self.analysis_preferences(ui, settings, lang);
                         ui.add_space(20.0);
-                        ui.heading(lang.text("В разработке", "In development"));
+                         super::icons::heading(ui,lang.text("В разработке", "In development"),super::icons::Icon::Info);
                          ui.label(lang.text("Linux: печать через системный portal; экспорт PDF и черновик письма доступны через «Поделиться». Размытие шапки — на Wayland с поддержкой compositor, иначе непрозрачный фон. Полноценный системный Share ещё в разработке.", "Linux printing uses the system portal; PDF export and email drafts are available in Share. Header blur uses a supported Wayland compositor, otherwise an opaque fallback. Full system Share remains in development."));
                         ui.label("Rphotos · MIT OR Apache-2.0 · based on ViewSkater");
                     });
@@ -70,7 +92,11 @@ impl Library {
         lang: Language,
     ) {
         ui.add_space(20.0);
-        ui.heading(lang.text("Локальные данные", "Local data"));
+        super::icons::heading(
+            ui,
+            lang.text("Локальные данные", "Local data"),
+            super::icons::Icon::Analysis,
+        );
         if ui
             .add_enabled(
                 !self.scanning,

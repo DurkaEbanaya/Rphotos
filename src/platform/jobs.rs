@@ -6,6 +6,7 @@ use std::{path::PathBuf, sync::mpsc};
 pub(crate) enum Job {
     SaveCopy(PathBuf),
     OpenWith(PathBuf),
+    Reveal(PathBuf),
     Copy(Vec<PathBuf>),
     Print(Vec<PathBuf>),
     Export(Vec<PathBuf>),
@@ -75,6 +76,7 @@ impl Jobs {
                     })
                 }
                 Job::OpenWith(path) => super::files::open_with(&path),
+                Job::Reveal(path) => super::files::reveal(&path),
                 Job::Copy(paths) => super::clipboard::copy_files(&paths),
                 Job::Print(paths) => super::printing::print(&paths),
                 Job::Export(paths) => {

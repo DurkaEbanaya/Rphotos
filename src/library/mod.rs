@@ -1,16 +1,19 @@
 //! Local library scene. UI owns presentation state; the worker owns SQLite.
 mod analysis;
+mod cache_status;
 mod catalog;
 mod discovery;
 mod facts;
 mod gallery;
 mod gestures;
+mod icons;
 mod layout;
 mod navigation;
 mod preferences;
 mod semantic;
 mod shell;
 pub mod store;
+mod thumbnail_jobs;
 mod thumbnails;
 pub(crate) mod ui;
 mod watcher;
@@ -50,11 +53,12 @@ pub enum Appearance {
     Dark,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 enum Section {
     Collection,
     Albums,
     Folders,
+    Favorites,
 }
 
 pub struct OpenPhoto {
@@ -76,9 +80,13 @@ struct Month {
     offset: f32,
 }
 
-type LayoutKey = (u32, u8, u64, String, Section, Option<i64>, Option<PathBuf>);
+type LayoutKey = (u32, u32, u64, String, Section, Option<i64>, Option<PathBuf>);
 
 pub struct Library {
+    #[cfg(test)]
+    timeline_marker: Option<f32>,
+    #[cfg(test)]
+    timeline_date: Option<String>,
     watcher: watcher::Watch,
     watch_initial_refresh: bool,
     watch_refresh_pending: bool,
@@ -113,6 +121,7 @@ pub struct Library {
     settings_open: bool,
     album_name: String,
     create_album_open: bool,
+    cache_errors_open: bool,
     assign_album_open: bool,
     remove_source: Option<i64>,
     picker: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
@@ -201,7 +210,8 @@ impl Library {
     }
 
     pub(crate) fn has_dialog(&self) -> bool {
-        self.assign_album_open
+        self.cache_errors_open
+            || self.assign_album_open
             || self.error.is_some()
             || self.settings_open
             || self.catalog.share
@@ -225,6 +235,10 @@ impl Library {
         let wake = ctx.clone();
         let watch_wake = ctx.clone();
         Self {
+            #[cfg(test)]
+            timeline_marker: None,
+            #[cfg(test)]
+            timeline_date: None,
             watcher: watcher::Watch::new(move || watch_wake.request_repaint()),
             // Isolated fixtures can use pre-populated metadata without a rescan.
             // The public native constructor enables one startup refresh.
@@ -261,6 +275,7 @@ impl Library {
             settings_open: false,
             album_name: String::new(),
             create_album_open: false,
+            cache_errors_open: false,
             assign_album_open: false,
             remove_source: None,
             picker: None,
@@ -308,6 +323,8 @@ impl Library {
                 }
                 self.content_search.hits = None;
                 self.state = state;
+                self.thumbnails
+                    .restore_availability(&self.state.photos, &self.state.unavailable);
                 self.thumbnails.restore_aspects(&self.state.aspects);
                 self.discovery.rebuild(&self.state);
                 self.thumbnails
@@ -349,6 +366,16 @@ impl Library {
             }
         }
         self.thumbnails.poll(ctx);
+        if self.thumbnails.take_availability_changed() {
+            self.layout_key = None;
+            self.invalidate_pager_preview();
+            self.selection.retain(|id| {
+                self.state
+                    .photos
+                    .iter()
+                    .any(|p| p.id == *id && !self.thumbnails.unavailable(p))
+            });
+        }
         self.thumbnails.persist_aspects(&self.worker);
         if self.watcher.take_dirty() {
             self.watch_refresh_pending = true;
@@ -383,10 +410,27 @@ impl Library {
         self.picker = Some(rx);
     }
 
+    #[cfg(test)]
     fn rebuild_rows(&mut self, width: f32, density: u8) {
+        self.rebuild_rows_at(
+            width,
+            match density {
+                0 => 512.0,
+                1 => 256.0,
+                _ => 96.0,
+            },
+        );
+    }
+
+    fn rebuild_rows_at(&mut self, width: f32, size: f32) {
+        let size = if size.is_finite() {
+            size.clamp(64.0, 640.0)
+        } else {
+            256.0
+        };
         let key = (
             width.to_bits(),
-            density,
+            size.to_bits(),
             self.thumbnails.revision,
             self.query.clone(),
             self.section,
@@ -404,59 +448,66 @@ impl Library {
             self.scroll_anchor = None;
             self.scroll_offset = 0.0;
         }
-        let semantic_hits = self
-            .content_search
-            .hits
+        // Aspect arrivals / width changes only affect packing. Reusing filtered
+        // month buckets avoids repeating Unicode search + local-time formatting
+        // for every photo whenever a batch of thumbnails finishes.
+        let regroup = self
+            .layout_key
             .as_ref()
-            .filter(|_| self.content_search.query == self.query);
-        let query = self.query.trim().to_lowercase();
-        let favorites = query.split_whitespace().any(|word| word == "is:favorite");
-        let query = query
-            .split_whitespace()
-            .filter(|word| *word != "is:favorite")
-            .collect::<Vec<_>>()
-            .join(" ");
-        self.filtered = self
-            .state
-            .photos
-            .iter()
-            .enumerate()
-            .filter_map(|(i, photo)| {
-                let matches = (!favorites || self.state.favorites.contains(&photo.id))
-                    && self.album.is_none_or(|album| photo.albums.contains(&album))
-                    && self
-                        .folder
-                        .as_ref()
-                        .is_none_or(|folder| photo.path.parent() == Some(folder.as_path()))
-                    && (if let Some(hits) = semantic_hits {
-                        hits.contains(&photo.id)
-                    } else {
-                        query.is_empty()
-                            || photo.path.to_string_lossy().to_lowercase().contains(&query)
-                            || photo.text.to_lowercase().contains(&query)
+            .is_none_or(|old| old.3 != key.3 || old.4 != key.4 || old.5 != key.5 || old.6 != key.6);
+        if regroup {
+            let semantic_hits = self
+                .content_search
+                .hits
+                .as_ref()
+                .filter(|_| self.content_search.query == self.query);
+            let query = self.query.trim().to_lowercase();
+            let favorites = query.split_whitespace().any(|word| word == "is:favorite");
+            let query = query
+                .split_whitespace()
+                .filter(|word| *word != "is:favorite")
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.filtered = self
+                .state
+                .photos
+                .iter()
+                .enumerate()
+                .filter_map(|(i, photo)| {
+                    let matches = !self.thumbnails.unavailable(photo)
+                        && (!(favorites || self.section == Section::Favorites)
+                            || self.state.favorites.contains(&photo.id))
+                        && self.album.is_none_or(|album| photo.albums.contains(&album))
+                        && self
+                            .folder
+                            .as_ref()
+                            .is_none_or(|folder| photo.path.parent() == Some(folder.as_path()))
+                        && (if let Some(hits) = semantic_hits {
+                            hits.contains(&photo.id)
+                        } else {
+                            query.is_empty()
+                                || photo.path.to_string_lossy().to_lowercase().contains(&query)
+                                || photo.text.to_lowercase().contains(&query)
+                        });
+                    matches.then_some(i)
+                })
+                .collect();
+            self.months.clear();
+            for &index in &self.filtered {
+                let month = month_key(self.state.photos[index].date());
+                if self.months.last().is_none_or(|m| m.key != month) {
+                    self.months.push(Month {
+                        key: month,
+                        indices: Vec::new(),
+                        offset: 0.0,
                     });
-                matches.then_some(i)
-            })
-            .collect();
-        self.rows.clear();
-        self.months.clear();
-        for &index in &self.filtered {
-            let month = month_key(self.state.photos[index].date());
-            if self.months.last().is_none_or(|m| m.key != month) {
-                self.months.push(Month {
-                    key: month,
-                    indices: Vec::new(),
-                    offset: 0.0,
-                });
+                }
+                self.months.last_mut().unwrap().indices.push(index);
             }
-            self.months.last_mut().unwrap().indices.push(index);
         }
-        let target = match density {
-            0 => 512.0,
-            1 => 256.0,
-            _ => 96.0,
-        };
-        let gap = if density >= 2 { 6.0 } else { 12.0 };
+        self.rows.clear();
+        let target = size;
+        let gap = 6.0 + 6.0 * ((size - 96.0) / 160.0).clamp(0.0, 1.0);
         self.row_offsets.clear();
         self.row_offsets.push(0.0);
         for (index, month) in self.months.iter_mut().enumerate() {
@@ -688,7 +739,7 @@ mod tests {
             );
             max_shapes = max_shapes.max(output.shapes.len());
             times.push(started.elapsed().as_secs_f64() * 1000.0);
-            assert!(library.thumbnails.pending_count() <= 24);
+            assert!(library.thumbnails.pending_count() <= 2104);
         }
         assert!(
             max_shapes < 1000,
@@ -701,6 +752,594 @@ mod tests {
         let search_ms = started.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(library.filtered.len(), 1);
         println!("100k metadata probe: insert_ms={insert_ms:.2}, snapshot_ms={snapshot_ms:.2}, layout_ms={layout_ms:.2}, rows={rows}, warm_frame_p50_ms={:.2}, warm_frame_p95_ms={:.2}, max_shapes={max_shapes}, search_ms={search_ms:.2}", times[30], times[57]);
+        library.query.clear();
+        library.layout_key = None;
+        library.rebuild_rows_at(1248.0, 96.0);
+        settings.thumbnail_density = 2;
+        let mut moving = Vec::new();
+        for frame in 0..180 {
+            library.scroll_offset = frame as f32 * 40.0;
+            library.scroll_anchor = None;
+            library.thumbnails.revision += 1; // Model a continuously arriving decoder batch.
+            let start = Instant::now();
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1500.0, 960.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    let _ = library.show(ctx, &mut settings);
+                },
+            );
+            moving.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        moving.sort_by(f64::total_cmp);
+        println!("100k small-grid moving+aspect-arrivals CPU: p50={:.3}ms p95={:.3}ms max={:.3}ms (no GPU submit or disk decode)",moving[90],moving[171],moving[179]);
+    }
+
+    #[test]
+    fn hover_heart_toggles_favorite_without_opening_and_new_tab_filters() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, source, database) = fixture();
+        let ctx = egui::Context::default();
+        let lib = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings, open)| {
+                    lib.poll(ctx);
+                    *open = lib.show(ctx, settings);
+                },
+                (lib, AppSettings::default(), None::<OpenPhoto>),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.run_steps(3);
+        let rect = h.get_by_label("Фото-00.png").raw_bounds().unwrap();
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(
+                rect.x1 as f32 - 20.0,
+                rect.y0 as f32 + 20.0,
+            )));
+        h.run_steps(3);
+        let heart = h
+            .get_by_label("В избранное: Фото-00.png")
+            .raw_bounds()
+            .unwrap();
+        let pos = egui::pos2(
+            (heart.x0 + heart.x1) as f32 / 2.0,
+            (heart.y0 + heart.y1) as f32 / 2.0,
+        );
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(1);
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(2);
+        while h.state().0.state.favorites.is_empty() {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(h.state().2.is_none(), "heart click must not open photo");
+        h.get_by_label("Избранное").click();
+        h.run_steps(3);
+        assert!(h.state().0.section == Section::Favorites);
+        assert_eq!(h.state().0.filtered.len(), 1);
+        h.get_by_label("Убрать из избранного: Фото-00.png").click();
+        h.run_steps(2);
+        while !h.state().0.state.favorites.is_empty() {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.run_steps(2);
+        assert!(h.state().0.filtered.is_empty());
+        assert!(source.join("Фото-00.png").exists());
+    }
+
+    #[test]
+    fn timeline_marker_moves_while_scrolling_within_one_month() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, _, database) = fixture();
+        let ctx = egui::Context::default();
+        let lib = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (lib, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.run_steps(3);
+        let before = h.state().0.timeline_marker.unwrap();
+        h.state_mut().0.scroll_offset = 300.0;
+        h.state_mut().0.scroll_anchor = None;
+        h.run_steps(3);
+        assert_eq!(h.state().0.months.len(), 1);
+        assert!(h.state().0.timeline_marker.unwrap() > before + 10.0);
+        h.get_by_label("Текущая дата: Октябрь 2026");
+        assert!(h.ctx.style().spacing.scroll.handle_min_length >= 64.0);
+    }
+
+    #[test]
+    fn arriving_aspects_do_not_reflow_rows_during_active_scroll() {
+        let (temp, _, database) = fixture();
+        let ctx = egui::Context::default();
+        let lib = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (lib, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let before = h.state().0.layout_key.as_ref().unwrap().2;
+        let filtered = h.state().0.filtered.clone();
+        for n in 1..12 {
+            h.state_mut().0.thumbnails.revision += 1;
+            h.state_mut().0.scroll_offset = n as f32 * 10.0;
+            h.state_mut().0.scroll_anchor = None;
+            h.run_steps(1);
+            assert_eq!(
+                h.state().0.layout_key.as_ref().unwrap().2,
+                before,
+                "decoder arrivals must not repack during scroll"
+            );
+        }
+        assert_eq!(h.state().0.filtered, filtered);
+        // Parallel decoders may publish another aspect just after an idle
+        // reflow. Wait for both queues and the final debounced revision instead
+        // of assuming all18 thumbnails finish within one arbitrary sleep.
+        let settle = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            h.run_steps(2);
+            if h.state().0.thumbnails.pending_count() == 0
+                && h.state().0.layout_key.as_ref().unwrap().2 == h.state().0.thumbnails.revision
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < settle,
+                "idle aspect reflow did not settle"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(
+            h.state().0.layout_key.as_ref().unwrap().2,
+            h.state().0.thumbnails.revision
+        );
+        assert_eq!(h.state().0.filtered, filtered);
+    }
+
+    #[test]
+    fn scan_status_shows_discovery_and_known_denominator() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, _, database) = fixture();
+        let ctx = egui::Context::default();
+        let lib = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (lib, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.state_mut().0.scanning = true;
+        h.state()
+            .0
+            .worker
+            .total
+            .store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+        h.state()
+            .0
+            .worker
+            .progress
+            .store(128, std::sync::atomic::Ordering::Relaxed);
+        h.run_steps(2);
+        h.get_by_label("Найдено: 128 · подсчёт файлов…");
+        h.state()
+            .0
+            .worker
+            .total
+            .store(30323, std::sync::atomic::Ordering::Relaxed);
+        h.state()
+            .0
+            .worker
+            .progress
+            .store(1000, std::sync::atomic::Ordering::Relaxed);
+        h.run_steps(2);
+        h.get_by_label("Обработано: 1000 / 30323");
+    }
+
+    #[test]
+    fn offline_photos_are_absent_from_grid_picker_and_viewer_order_then_return() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, source, database) = fixture();
+        let db = store::connect(&database).unwrap();
+        let photo = store::snapshot(&db).unwrap().photos[0].clone();
+        let cache = temp.path().join("cache");
+        thumbnails::load_detailed(&cache, &photo.path, &photo.key).unwrap();
+        let png = cache.join(format!("{}.png", photo.key));
+        let bytes = std::fs::read(&png).unwrap();
+        drop(db);
+        let offline = temp.path().join("offline");
+        std::fs::rename(&source, &offline).unwrap();
+        let ctx = egui::Context::default();
+        let library = Library::with_paths(&ctx, database, cache);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (library, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.run_steps(3);
+        assert_eq!(
+            h.state().0.state.photos.len(),
+            18,
+            "index retains offline identities"
+        );
+        assert!(h.state().0.filtered.is_empty());
+        assert!(
+            h.state().0.rows.is_empty(),
+            "no empty cells or month headers"
+        );
+        assert!(h.query_by_label("Фото-00.png").is_none());
+        assert!(h.query_by_label("Файл недоступен").is_none());
+        h.state_mut().0.start_picker(None);
+        h.run_steps(3);
+        assert!(h.query_by_label("Фото-00.png").is_none());
+        h.press_key(egui::Key::Escape);
+        h.run_steps(3);
+        std::fs::rename(&offline, &source).unwrap();
+        while h.state().0.filtered.len() != 18 {
+            h.run_steps(2);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "offline items did not return"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(h.state().0.open(0).paths.len(), 18);
+        assert_eq!(std::fs::read(png).unwrap(), bytes);
+    }
+
+    #[test]
+    fn photo_context_menu_offers_file_manager_without_launching_it() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, _, database) = fixture();
+        let ctx = egui::Context::default();
+        let library = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (library, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.run_steps(4);
+        let r = h.get_by_label("Фото-00.png").raw_bounds().unwrap();
+        let pos = egui::pos2((r.x0 + r.x1) as f32 / 2.0, (r.y0 + r.y1) as f32 / 2.0);
+        h.input_mut().events.push(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.run_steps(3);
+        h.get_by_label("Показать в проводнике");
+        assert!(!h.state().0.catalog.jobs.busy());
+    }
+
+    #[test]
+    fn cache_error_report_reopens_from_disk_and_blocks_background_actions() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, source, database) = fixture();
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let failures = vec![thumbnail_jobs::Failure {
+            path: source.join("empty.jpg"),
+            reason: "Original file is empty (0 bytes)".into(),
+        }];
+        std::fs::write(
+            cache.join("last-build-errors.json"),
+            serde_json::to_vec(&failures).unwrap(),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        let lib = Library::with_paths(&ctx, database, cache);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 760.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (lib, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !h.state().0.ready || h.state().0.thumbnails.failures().is_empty() {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.get_by_label("…").click();
+        h.run_steps(3);
+        h.get_by_label("Ошибки кеша миниатюр").click();
+        h.run_steps(3);
+        assert!(h.state().0.cache_errors_open);
+        h.get_by_label("empty.jpg");
+        let reason = h
+            .get_by_label("Original file is empty (0 bytes)")
+            .raw_bounds()
+            .unwrap();
+        let close = h.get_by_label("Закрыть").raw_bounds().unwrap();
+        assert!(
+            close.y0 - reason.y1 < 40.0,
+            "error modal must shrink to its actual contents, not reserve empty rows"
+        );
+        h.press_key(egui::Key::F5);
+        h.run_steps(2);
+        assert!(!h.state().0.scanning);
+        h.get_by_label("Закрыть").click();
+        h.run_steps(3);
+        assert!(!h.state().0.cache_errors_open);
+        assert!(source.join("Фото-00.png").is_file());
+    }
+
+    #[test]
+    fn cache_all_button_builds_entire_library_even_when_search_filters_one_photo() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, source, database) = fixture();
+        let ctx = egui::Context::default();
+        let lib = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (lib, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.state_mut().0.query = "Фото-00".into();
+        h.run_steps(3);
+        assert_eq!(h.state().0.filtered.len(), 1);
+        h.get_by_label("…").click();
+        h.run_steps(3);
+        h.get_by_label("Прогрузить все миниатюры").click();
+        h.run_steps(3);
+        assert_eq!(h.state().0.thumbnails.bulk_status().total, 18);
+        assert_eq!(h.state().1.thumbnail_disk_gib, 0);
+        while h.state().0.thumbnails.bulk_status().running {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(h.state().0.thumbnails.bulk_status().failed, 0);
+        for photo in &h.state().0.state.photos {
+            assert!(temp
+                .path()
+                .join("cache")
+                .join(format!("{}.png", photo.key))
+                .is_file());
+        }
+        assert!(source.join("Фото-00.png").is_file());
+        // The background job can complete just after the last rendered frame.
+        h.run_steps(3);
+        h.get_by_label("Скрыть уведомление").click();
+        h.run_steps(2);
+        assert_eq!(h.state().0.thumbnails.bulk_status().total, 0);
+        h.state_mut().0.settings_open = true;
+        h.run_steps(3);
+        assert!(
+            h.query_by_label("Прогрузить все миниатюры").is_none(),
+            "task launch belongs to the main menu, not preferences"
+        );
+    }
+
+    #[test]
+    fn grid_zoom_is_continuous_pinch_compatible_and_presets_reset_it() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, _, database) = fixture();
+        let ctx = egui::Context::default();
+        let lib = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (lib, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.run_steps(3);
+        let count = h.state().0.filtered.len();
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(650.0, 450.0)));
+        h.input_mut().events.push(egui::Event::Zoom(1.13));
+        h.run_steps(1);
+        assert!(
+            (h.state().1.thumbnail_size - 289.28).abs() < 1.0,
+            "{}",
+            h.state().1.thumbnail_size
+        );
+        assert_eq!(h.state().0.filtered.len(), count);
+        assert_eq!(h.state().0.section, Section::Collection);
+        assert_eq!(
+            h.state().0.layout_key.as_ref().unwrap().1,
+            h.state().1.thumbnail_size.to_bits()
+        );
+        h.input_mut().events.push(egui::Event::Zoom(1.07));
+        h.run_steps(1);
+        assert!(h.state().1.thumbnail_size > 300.0);
+        h.get_by_label("Средние миниатюры").click();
+        h.run_steps(2);
+        assert_eq!(h.state().1.thumbnail_size, 0.0);
+        assert_eq!(
+            h.state().0.layout_key.as_ref().unwrap().1,
+            256.0_f32.to_bits()
+        );
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        h.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 90.0),
+            modifiers: ctrl,
+        });
+        h.run_steps(1);
+        assert!(
+            h.state().1.thumbnail_size > 256.0,
+            "Ctrl+wheel must resize photos, not the entire app"
+        );
+        assert_eq!(h.ctx.zoom_factor(), 1.0);
+        h.get_by_label("Средние миниатюры").click();
+        h.run_steps(2);
+        // Real multi-touch events (seed the pointer used by egui's gesture state).
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(500.0, 450.0)));
+        h.run_steps(1);
+        let touch = |id, phase, x| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(id),
+            phase,
+            pos: egui::pos2(x, 450.0),
+            force: None,
+        };
+        h.input_mut().events.extend([
+            touch(1, egui::TouchPhase::Start, 500.0),
+            touch(2, egui::TouchPhase::Start, 700.0),
+        ]);
+        h.run_steps(1);
+        h.input_mut().events.extend([
+            touch(1, egui::TouchPhase::Move, 460.0),
+            touch(2, egui::TouchPhase::Move, 740.0),
+        ]);
+        h.run_steps(1);
+        assert!(h.state().1.thumbnail_size > 320.0);
+        assert_eq!(h.state().0.section, Section::Collection);
+        h.input_mut().events.extend([
+            touch(1, egui::TouchPhase::End, 460.0),
+            touch(2, egui::TouchPhase::End, 740.0),
+        ]);
+        h.run_steps(2);
+        assert!(h.state().0.selection.is_empty());
+    }
+
+    #[test]
+    fn overflow_has_flat_reference_rows_and_favorites_is_only_a_tab() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, _, database) = fixture();
+        let ctx = egui::Context::default();
+        let lib = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1500.0, 960.0))
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.poll(ctx);
+                    let _ = lib.show(ctx, settings);
+                },
+                (lib, AppSettings::default()),
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !h.state().0.ready {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.run_steps(3);
+        h.get_by_label("…").click();
+        h.run_steps(3);
+        let refresh = h.get_by_label("Обновить · F5").raw_bounds().unwrap();
+        let settings = h.get_by_label("Настройки").raw_bounds().unwrap();
+        assert_eq!(refresh.height(), 32.0);
+        assert!((refresh.width() - 160.0).abs() < 2.0, "{refresh:?}");
+        assert_eq!(settings.y0 - refresh.y0, 64.0);
+        let favorite = h.get_by_label("Избранное").raw_bounds().unwrap();
+        assert!(
+            favorite.y0 < 128.0,
+            "favorite must be a section tab, not a flyout item"
+        );
+        h.press_key(egui::Key::Escape);
+        h.run_steps(2);
+        assert!(h.query_by_label("Настройки").is_none());
     }
 
     #[test]
@@ -996,14 +1635,19 @@ mod tests {
         let search = h.state().0.search_rect.unwrap();
         assert_eq!(
             (search.left(), search.top(), search.width(), search.height()),
-            (120.0, 38.0, 396.0, 36.0)
+            (16.0, 38.0, 396.0, 36.0)
         );
         let tabs = h.get_by_label("Коллекция").raw_bounds().unwrap();
-        assert_eq!((tabs.x0, tabs.y0, tabs.height()), (120.0, 80.0, 48.0));
+        assert_eq!((tabs.x0, tabs.y0, tabs.height()), (16.0, 80.0, 48.0));
+        let first_photo = h.get_by_label("Фото-00.png").raw_bounds().unwrap();
+        assert_eq!(
+            first_photo.x0, 16.0,
+            "gallery must use the same slim gutter as commands/tabs"
+        );
         let density = h.get_by_label("Крупные миниатюры").raw_bounds().unwrap();
         assert_eq!(
             (density.x0, density.y0, density.width(), density.height()),
-            (1305.0, 82.0, 25.0, 44.0)
+            (1409.0, 82.0, 25.0, 44.0)
         );
         h.get_by_label("Выбрать").click();
         h.run_steps(2);
@@ -1205,6 +1849,55 @@ mod tests {
         }
         for (name, size, scale, language, appearance) in [
             (
+                "cache-errors",
+                [1000.0, 760.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "collection-cache-all",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "collection-scan-progress",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "collection-continuous-zoom",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "collection-menu",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "collection-heart",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "favorites",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
                 "collection-light",
                 [1440.0, 900.0],
                 1.0,
@@ -1362,6 +2055,12 @@ mod tests {
             assert_eq!(harness.state().0.state.photos.len(), 18);
             match name {
                 "albums" => harness.state_mut().0.section = Section::Albums,
+                "favorites" => {
+                    let lib = &mut harness.state_mut().0;
+                    lib.state.favorites.insert(lib.state.photos[0].id);
+                    lib.section = Section::Favorites;
+                    lib.layout_key = None;
+                }
                 "album-detail" => {
                     let id = harness.state().0.state.albums[0].id;
                     harness.state_mut().0.enter_album(id);
@@ -1398,6 +2097,25 @@ mod tests {
                 let id = harness.state().0.state.photos[0].id;
                 harness.state_mut().0.selection.insert(id);
                 harness.run_steps(4);
+            }
+            if name == "collection-continuous-zoom" {
+                harness.state_mut().1.thumbnail_size = 177.0;
+            }
+            if name == "collection-scan-progress" {
+                let lib = &mut harness.state_mut().0;
+                lib.scanning = true;
+                lib.worker
+                    .total
+                    .store(30323, std::sync::atomic::Ordering::Relaxed);
+                lib.worker
+                    .progress
+                    .store(12000, std::sync::atomic::Ordering::Relaxed);
+            }
+            if name == "collection-cache-all" {
+                harness.state_mut().1.thumbnail_disk_gib = 0;
+                let lib = &mut harness.state_mut().0;
+                lib.thumbnails.disk_quota(0);
+                lib.thumbnails.build_all(&lib.state.photos);
             }
             if name == "collection-large" {
                 harness.state_mut().1.thumbnail_density = 0;
@@ -1444,6 +2162,52 @@ mod tests {
                 }
                 assert_eq!(harness.state().0.pager.adjacent, Some(1));
             }
+            if name == "collection-menu" {
+                use egui_kittest::kittest::Queryable;
+                harness.get_by_label("…").click();
+                harness.run_steps(3);
+            }
+            if name == "cache-errors" {
+                let errors = vec![
+                    thumbnail_jobs::Failure {
+                        path: PathBuf::from("/synthetic/empty.jpg"),
+                        reason: "Original file is empty (0 bytes); no image data to decode".into(),
+                    },
+                    thumbnail_jobs::Failure {
+                        path: PathBuf::from("/synthetic/without-preview.dng"),
+                        reason: "Cannot decode original image: RAW file without an embedded JPEG"
+                            .into(),
+                    },
+                ];
+                let cache = harness.state().0.thumbnails.directory().to_owned();
+                std::fs::write(
+                    cache.join("last-build-errors.json"),
+                    serde_json::to_vec(&errors).unwrap(),
+                )
+                .unwrap();
+                // A fresh worker loads the saved report, as on application restart.
+                let thumbnails = thumbnails::Thumbnails::new(cache, &harness.ctx);
+                harness.state_mut().0.thumbnails = thumbnails;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while harness.state().0.thumbnails.failures().is_empty() {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                harness.state_mut().0.cache_errors_open = true;
+                harness.run_steps(4);
+            }
+            if name == "collection-heart" {
+                use egui_kittest::kittest::Queryable;
+                let rect = harness.get_by_label("Фото-00.png").raw_bounds().unwrap();
+                harness
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(egui::pos2(
+                        rect.x1 as f32 - 20.0,
+                        rect.y0 as f32 + 20.0,
+                    )));
+                harness.run_steps(3);
+            }
             let image = harness.render().expect("offscreen render failed");
             image.save(output.join(format!("{name}.png"))).unwrap();
         }
@@ -1455,6 +2219,8 @@ mod tests {
         // Test only the pure layout state, not filesystem workers.
         let temp = tempfile::tempdir().unwrap();
         let mut library = Library {
+            timeline_marker: None,
+            timeline_date: None,
             watcher: watcher::Watch::new(|| {}),
             watch_initial_refresh: true,
             watch_refresh_pending: false,
@@ -1512,6 +2278,7 @@ mod tests {
             album_name: String::new(),
             create_album_open: false,
             assign_album_open: false,
+            cache_errors_open: false,
             remove_source: None,
             picker: None,
             grid_right: 0.0,
@@ -1868,8 +2635,18 @@ mod tests {
             h.input_mut().events.push(touch(phase, x, 300.0));
             h.run_steps(1);
         }
+        assert!(h.state().0.section == Section::Favorites);
+        h.run_steps(45);
+        for (phase, x) in [
+            (egui::TouchPhase::Start, 700.0),
+            (egui::TouchPhase::Move, 400.0),
+            (egui::TouchPhase::End, 400.0),
+        ] {
+            h.input_mut().events.push(touch(phase, x, 300.0));
+            h.run_steps(1);
+        }
         assert!(
-            h.state().0.section == Section::Folders,
+            h.state().0.section == Section::Favorites,
             "no wrap at last tab"
         );
         assert!(h.state().0.pager.adjacent.is_none());

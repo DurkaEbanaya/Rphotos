@@ -24,6 +24,7 @@ pub(crate) fn show(
     tokens.apply(ctx);
     let mut go_back = false;
     egui::TopBottomPanel::top("rphotos_title")
+        .show_separator_line(false)
         .exact_height(32.0)
         .frame(egui::Frame::NONE.fill(tokens.header))
         .show(ctx, |ui| {
@@ -112,25 +113,7 @@ pub(crate) fn show(
                             .line_segment([c + vec2(-5.0, 0.0), c + vec2(5.0, 0.0)], s);
                     }
                     1 => {
-                        if maximized {
-                            ui.painter().rect_stroke(
-                                Rect::from_min_size(c + vec2(-3.0, -5.0), vec2(8.0, 8.0)),
-                                0.0,
-                                s,
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                        let sq = Rect::from_min_size(
-                            c + vec2(-5.0, if maximized { -3.0 } else { -5.0 }),
-                            vec2(10.0, 10.0),
-                        );
-                        ui.painter().rect_filled(
-                            sq,
-                            0.0,
-                            if hover { tokens.tile } else { tokens.header },
-                        );
-                        ui.painter()
-                            .rect_stroke(sq, 0.0, s, egui::StrokeKind::Inside);
+                        maximize_icon(ui.painter(), c, s, maximized);
                     }
                     _ => {
                         ui.painter()
@@ -152,6 +135,31 @@ pub(crate) fn show(
         resize_edges(ctx);
     }
     go_back
+}
+
+fn maximize_icon(painter: &egui::Painter, center: egui::Pos2, stroke: Stroke, maximized: bool) {
+    if maximized {
+        // Draw only the exposed part of the rear window. Never mask its hidden
+        // edges with header paint: repeating translucent fill changes opacity.
+        painter.add(egui::Shape::line(
+            vec![
+                center + vec2(-3.0, -3.0),
+                center + vec2(-3.0, -5.0),
+                center + vec2(5.0, -5.0),
+                center + vec2(5.0, 3.0),
+            ],
+            stroke,
+        ));
+    }
+    painter.rect_stroke(
+        Rect::from_min_size(
+            center + vec2(-5.0, if maximized { -3.0 } else { -5.0 }),
+            vec2(10.0, 10.0),
+        ),
+        0.0,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
 }
 
 fn resize_edges(ctx: &egui::Context) {
@@ -234,6 +242,50 @@ fn resize_edges(ctx: &egui::Context) {
 mod tests {
     use super::*;
     use egui_kittest::{kittest::Queryable, Harness};
+
+    #[test]
+    fn title_has_no_separator_between_window_and_application_commands() {
+        let ctx = egui::Context::default();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1500.0, 960.0))),
+                ..Default::default()
+            },
+            |ctx| {
+                show(ctx, "Rphotos", None, Appearance::Light, Language::En, false);
+            },
+        );
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::LineSegment { points, stroke } if stroke.width>0.0 && stroke.color!=Color32::TRANSPARENT && (points[0].y-32.0).abs()<1.0 && (points[1].y-32.0).abs()<1.0 && (points[1].x-points[0].x).abs()>1000.0)), "title separator must not be painted");
+    }
+
+    #[test]
+    fn maximize_and_restore_icons_have_no_interior_fill() {
+        for maximized in [false, true] {
+            let ctx = egui::Context::default();
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                maximize_icon(
+                    &ctx.layer_painter(egui::LayerId::background()),
+                    pos2(30.0, 16.0),
+                    Stroke::new(1.0_f32, Color32::BLACK),
+                    maximized,
+                );
+            });
+            let mut outlines = 0;
+            for shape in output.shapes {
+                match shape.shape {
+                    egui::Shape::Rect(rect) => {
+                        assert_eq!(rect.fill, Color32::TRANSPARENT);
+                        outlines += 1;
+                    }
+                    egui::Shape::Path(path) => assert_eq!(path.fill, Color32::TRANSPARENT),
+                    egui::Shape::Noop => {}
+                    other => panic!("Unexpected icon paint: {other:?}"),
+                }
+            }
+            assert_eq!(outlines, 1);
+        }
+    }
 
     #[test]
     fn title_buttons_have_measured_geometry_and_emit_window_commands() {

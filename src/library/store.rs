@@ -47,6 +47,7 @@ pub struct Album {
 
 #[derive(Default, Debug)]
 pub struct Snapshot {
+    pub unavailable: HashSet<String>,
     pub directories: Vec<PathBuf>,
     pub favorites: HashSet<i64>,
     pub aspects: std::collections::HashMap<String, f32>,
@@ -357,6 +358,7 @@ pub fn snapshot(db: &Connection) -> Result<Snapshot> {
         let (id,text)=row?;if let Some(&i)=positions.get(&id){photos[i].text.push('\n');photos[i].text.push_str(&text);}
     }
     Ok(Snapshot {
+        unavailable: HashSet::new(),
         directories: db
             .prepare("SELECT DISTINCT path FROM source_directories ORDER BY path")?
             .query_map([], |r| Ok(bytes_path(r.get(0)?)))?
@@ -556,6 +558,67 @@ pub fn cache_key(path: &Path, size: u64, modified: SystemTime) -> String {
     format!("{:x}", hash.finalize())
 }
 
+fn sources(db: &Connection) -> Result<Vec<Source>> {
+    Ok(db
+        .prepare("SELECT id,path FROM sources ORDER BY id")?
+        .query_map([], |r| {
+            Ok(Source {
+                id: r.get(0)?,
+                path: bytes_path(r.get(1)?),
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Discovery pass: count the same source associations as scan, without decoding
+/// or collecting every path in memory. Until this finishes the total is unknown.
+pub fn count_images(
+    db: &Connection,
+    generation: &AtomicU64,
+    ticket: u64,
+    mut progress: impl FnMut(usize),
+) -> Result<usize> {
+    let mut count = 0;
+    for source in sources(db)? {
+        let mut stack = vec![source.path];
+        while let Some(dir) = stack.pop() {
+            if generation.load(Ordering::Relaxed) != ticket {
+                return Ok(count);
+            }
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries {
+                if generation.load(Ordering::Relaxed) != ticket {
+                    return Ok(count);
+                }
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                if entry.file_name().to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_symlink() {
+                    continue;
+                }
+                if kind.is_dir() {
+                    stack.push(entry.path());
+                } else if kind.is_file() && crate::file_io::is_supported_image(&entry.path()) {
+                    count += 1;
+                    if count % 128 == 0 {
+                        progress(count);
+                    }
+                }
+            }
+        }
+    }
+    progress(count);
+    Ok(count)
+}
+
 /// A cancelled or incomplete traversal never prunes the last successful index.
 /// Symlinks and hidden files/directories are intentionally not followed.
 pub fn scan(
@@ -564,7 +627,7 @@ pub fn scan(
     ticket: u64,
     mut progress: impl FnMut(usize),
 ) -> Result<Vec<String>> {
-    let sources = snapshot(db)?.sources;
+    let sources = sources(db)?;
     let mut warnings = Vec::new();
     let mut count = 0;
     for source in sources {
@@ -580,7 +643,11 @@ pub fn scan(
             let entries = match std::fs::read_dir(&dir) {
                 Ok(e) => e,
                 Err(e) => {
-                    if warnings.len() < 20 {
+                    if !matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                    ) && warnings.len() < 20
+                    {
                         warnings.push(format!("{}: {e}", dir.display()));
                     }
                     complete = false;
@@ -654,7 +721,13 @@ pub fn scan(
                 })();
                 if let Err(e) = result {
                     complete = false;
-                    if warnings.len() < 20 {
+                    let unavailable = e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                        matches!(
+                            e.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                        )
+                    });
+                    if !unavailable && warnings.len() < 20 {
                         warnings.push(format!("{}: {e}", dir.display()));
                     }
                 }
@@ -697,6 +770,37 @@ pub fn scan(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn discovery_total_matches_scan_and_can_be_cancelled_without_changing_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("images");
+        std::fs::create_dir(&root).unwrap();
+        for n in 0..260 {
+            std::fs::write(root.join(format!("{n}.png")), b"synthetic header").unwrap();
+        }
+        std::fs::write(root.join("video.mp4"), b"ignored").unwrap();
+        std::fs::write(root.join(".hidden.jpg"), b"ignored").unwrap();
+        let mut db = connect(&temp.path().join("library.sqlite3")).unwrap();
+        add_source(&db, &root).unwrap();
+        let generation = AtomicU64::new(1);
+        let mut found = 0;
+        assert_eq!(
+            count_images(&db, &generation, 1, |n| found = n).unwrap(),
+            260
+        );
+        assert_eq!(found, 260);
+        assert!(snapshot(&db).unwrap().photos.is_empty());
+        let mut processed = 0;
+        scan(&mut db, &generation, 1, |n| processed = n).unwrap();
+        assert_eq!(processed, found);
+        let before = snapshot(&db).unwrap().photos.len();
+        count_images(&db, &generation, 1, |_| {
+            generation.store(2, Ordering::Relaxed);
+        })
+        .unwrap();
+        assert_eq!(snapshot(&db).unwrap().photos.len(), before);
+    }
+
     #[test]
     fn aspect_snapshot_materializes_keys_without_correlated_photo_scan() {
         let temp = tempfile::tempdir().unwrap();
@@ -809,7 +913,7 @@ mod tests {
         // An unavailable source keeps its previously indexed empty tree.
         let offline = temp.path().join("offline");
         std::fs::rename(&root, &offline).unwrap();
-        assert!(!scan(&mut db, &generation, 1, |_| {}).unwrap().is_empty());
+        assert!(scan(&mut db, &generation, 1, |_| {}).unwrap().is_empty());
         assert_eq!(snapshot(&db).unwrap().directories, state.directories);
         std::fs::rename(&offline, &root).unwrap();
 
@@ -890,7 +994,7 @@ mod tests {
         let gen = AtomicU64::new(1);
         scan(&mut db, &gen, 1, |_| {}).unwrap();
         std::fs::rename(&source, temp.path().join("offline")).unwrap();
-        assert!(!scan(&mut db, &gen, 1, |_| {}).unwrap().is_empty());
+        assert!(scan(&mut db, &gen, 1, |_| {}).unwrap().is_empty());
         assert_eq!(snapshot(&db).unwrap().photos.len(), 1);
         scan(&mut db, &gen, 0, |_| {}).unwrap();
         assert_eq!(snapshot(&db).unwrap().photos.len(), 1);

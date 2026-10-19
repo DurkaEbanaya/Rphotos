@@ -112,7 +112,7 @@ impl Library {
                 ui.spacing_mut().interact_size.y = 48.0;
                 ui.spacing_mut().button_padding = vec2(16.0, 0.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(if width >= 1000.0 { 120.0 } else { 16.0 });
+                    ui.add_space(16.0);
                     if self.catalog.rename.is_some() {
                         if ui
                             .add_enabled(
@@ -311,7 +311,9 @@ impl Library {
                                 .photos
                                 .iter()
                                 .enumerate()
-                                .filter(|(_, p)| p.albums.contains(&album.id))
+                                .filter(|(_, p)| {
+                                    p.albums.contains(&album.id) && !self.thumbnails.unavailable(p)
+                                })
                                 .map(|(i, _)| i)
                                 .collect();
                             let cover = album
@@ -419,16 +421,15 @@ impl Library {
         let cover = album
             .cover
             .and_then(|id| {
-                self.state
-                    .photos
-                    .iter()
-                    .position(|p| p.id == id && p.albums.contains(&album.id))
+                self.state.photos.iter().position(|p| {
+                    p.id == id && p.albums.contains(&album.id) && !self.thumbnails.unavailable(p)
+                })
             })
             .or_else(|| {
                 self.state
                     .photos
                     .iter()
-                    .position(|p| p.albums.contains(&album.id))
+                    .position(|p| p.albums.contains(&album.id) && !self.thumbnails.unavailable(p))
             });
         if !self.selecting {
             let r = Rect::from_min_size(
@@ -707,21 +708,22 @@ impl Library {
                     picker.selected.len()
                 ));
                 let query = picker.query.to_lowercase();
-                let indices: Vec<_> =
-                    self.state
-                        .photos
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, p)| {
-                            (!picker.folders
+                let indices: Vec<_> = self
+                    .state
+                    .photos
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| {
+                        !self.thumbnails.unavailable(p)
+                            && (!picker.folders
                                 || picker.folder.as_ref().is_some_and(|folder| {
                                     p.path.parent() == Some(folder.as_path())
                                 }))
-                                && (p.path.to_string_lossy().to_lowercase().contains(&query)
-                                    || p.text.to_lowercase().contains(&query))
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
+                            && (p.path.to_string_lossy().to_lowercase().contains(&query)
+                                || p.text.to_lowercase().contains(&query))
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
                 let items: Vec<_> = indices
                     .iter()
                     .map(|&i| (i, self.thumbnails.aspect(&self.state.photos[i])))

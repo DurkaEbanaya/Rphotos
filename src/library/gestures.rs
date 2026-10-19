@@ -127,6 +127,86 @@ impl Pager {
 }
 
 impl Library {
+    pub(super) fn grid_scale_input(
+        &mut self,
+        ctx: &egui::Context,
+        settings: &mut crate::settings::AppSettings,
+    ) {
+        if self.settings_open
+            || self.catalog.picker.is_some()
+            || self.semantic_zoom
+            || self.assign_album_open
+            || self.create_album_open
+            || self.remove_source.is_some()
+            || self.catalog.remove.is_some()
+            || self.catalog.share
+            || self.catalog.trash.is_some()
+            || self.catalog.jobs.message.is_some()
+            || self.error.is_some()
+            || self.popup_open_last_frame
+            || ctx.memory(|m| m.any_popup_open())
+            || ctx.wants_keyboard_input()
+        {
+            return;
+        }
+        if self.section == Section::Albums && self.album.is_none() {
+            return;
+        }
+        let (factor, pos) = ctx.input(|i| {
+            (
+                i.zoom_delta(),
+                i.multi_touch()
+                    .map(|t| t.center_pos)
+                    .or(i.pointer.hover_pos()),
+            )
+        });
+        let viewport =
+            ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("library.grid.viewport")));
+        let Some(pos) = pos.filter(|p| viewport.is_some_and(|r| r.contains(*p))) else {
+            return;
+        };
+        if !factor.is_finite() || factor <= 0.0 || (factor - 1.0).abs() < 0.0001 {
+            return;
+        }
+        let old = if settings.thumbnail_size > 0.0 {
+            settings.thumbnail_size
+        } else {
+            match settings.thumbnail_density {
+                0 => 512.0,
+                1 => 256.0,
+                _ => 96.0,
+            }
+        };
+        let size = (old * factor).clamp(64.0, 640.0);
+        if (size - old).abs() < 0.01 {
+            return;
+        }
+        // Keep the row under the gesture near its screen position through reflow.
+        let prefix = self.discovery_height();
+        let content_y = self.scroll_offset + pos.y - viewport.unwrap().top();
+        let row = self
+            .row_offsets
+            .partition_point(|y| *y + prefix <= content_y)
+            .saturating_sub(1);
+        if let Some(super::GridRow::Photos(r)) = self.rows.get(row) {
+            if let Some(cell) = r.cells.first() {
+                self.scroll_anchor = Some((
+                    self.state.photos[cell.index].id,
+                    self.row_offsets[row] + prefix - self.scroll_offset,
+                ));
+            }
+        }
+        settings.thumbnail_size = size;
+        settings.thumbnail_density = if size >= 384.0 {
+            0
+        } else if size >= 176.0 {
+            1
+        } else {
+            2
+        };
+        ctx.request_repaint();
+    }
+
     pub(super) fn invalidate_pager_preview(&mut self) {
         self.pager.preview.layout = None;
     }
@@ -147,6 +227,7 @@ impl Library {
             Section::Collection => 0,
             Section::Albums => 1,
             Section::Folders => 2,
+            Section::Favorites => 3,
         };
         let rect = ui.max_rect().translate(egui::vec2(
             self.pager.offset + relative as f32 * ui.max_rect().width(),
@@ -202,10 +283,11 @@ impl Library {
             Section::Collection => 0,
             Section::Albums => 1,
             Section::Folders => 2,
+            Section::Favorites => 3,
         };
         if let Some(direction) = direction {
             let next = current + direction;
-            if (0..=2).contains(&next) {
+            if (0..=3).contains(&next) {
                 let mut preview = std::mem::take(&mut self.pager.preview);
                 if preview.section != Some(section(next)) {
                     preview = Preview::default();
@@ -221,7 +303,7 @@ impl Library {
             }
         } else if self.pager.horizontal {
             let relative = if self.pager.offset < 0.0 { 1 } else { -1 };
-            self.pager.adjacent = (0..=2).contains(&(current + relative)).then_some(relative);
+            self.pager.adjacent = (0..=3).contains(&(current + relative)).then_some(relative);
             if self.pager.adjacent.is_none() {
                 self.pager.offset = self.pager.delta.x * 0.15;
             }
@@ -239,7 +321,8 @@ fn section(index: i32) -> Section {
     match index {
         0 => Section::Collection,
         1 => Section::Albums,
-        _ => Section::Folders,
+        2 => Section::Folders,
+        _ => Section::Favorites,
     }
 }
 

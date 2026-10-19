@@ -2,6 +2,89 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
+// Preserve lexical absolute paths even if the removable volume is offline.
+fn reveal_target(path: &Path) -> Result<(std::path::PathBuf, bool)> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if absolute.is_file() {
+        return Ok((absolute, true));
+    }
+    let mut parent = absolute.parent();
+    while let Some(folder) = parent {
+        if folder.is_dir() {
+            return Ok((folder.to_path_buf(), false));
+        }
+        parent = folder.parent();
+    }
+    bail!("No accessible parent directory for this photo")
+}
+
+pub(super) fn reveal(path: &Path) -> Result<()> {
+    let (target, select) = reveal_target(path)?;
+    #[cfg(target_os = "linux")]
+    {
+        if select {
+            let selected: Result<()> = pollster::block_on(async {
+                let connection = ashpd::zbus::Connection::session().await?;
+                let proxy = ashpd::zbus::Proxy::new(
+                    &connection,
+                    "org.freedesktop.FileManager1",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1",
+                )
+                .await?;
+                let uri = ashpd::url::Url::from_file_path(&target)
+                    .map_err(|_| anyhow::anyhow!("Invalid file URI"))?;
+                proxy
+                    .call::<_, _, ()>("ShowItems", &(vec![uri.as_str()], ""))
+                    .await?;
+                Ok(())
+            });
+            if selected.is_ok() {
+                return Ok(());
+            }
+        }
+        let folder = if select {
+            target.parent().context("Photo has no parent directory")?
+        } else {
+            target.as_path()
+        };
+        if !std::process::Command::new("xdg-open")
+            .arg(folder)
+            .status()?
+            .success()
+        {
+            bail!("The file manager could not open this folder");
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = std::process::Command::new("explorer.exe");
+        if select {
+            let mut argument = std::ffi::OsString::from("/select,");
+            argument.push(&target);
+            command.arg(argument);
+        } else {
+            command.arg(&target);
+        }
+        command.spawn().context("Cannot start Explorer")?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("/usr/bin/open");
+        if select {
+            command.arg("-R");
+        }
+        if !command.arg(&target).status()?.success() {
+            bail!("Finder could not reveal this photo");
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn save_copy(source: &Path, destination: &Path) -> Result<()> {
     let source = source.canonicalize()?;
     if !source.is_file() {
@@ -59,6 +142,20 @@ pub(super) fn open_with(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reveal_selects_existing_file_and_falls_back_to_accessible_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().canonicalize().unwrap();
+        let photo = folder.join("Фото & # file.jpg");
+        std::fs::write(&photo, b"original").unwrap();
+        assert_eq!(reveal_target(&photo).unwrap(), (photo.clone(), true));
+        assert_eq!(
+            reveal_target(&folder.join("offline/sub/file.jpg")).unwrap(),
+            (folder.clone(), false)
+        );
+        assert_eq!(std::fs::read(photo).unwrap(), b"original");
+    }
 
     #[test]
     fn copy_is_byte_exact_atomic_and_cannot_replace_original() {

@@ -20,6 +20,8 @@
 ## Где что находится
 
 - `src/library/{store,worker,thumbnails}.rs`: SQLite, фоновый scan, thumbnail cache.
+- `src/library/thumbnail_jobs.rs`: CPU-scaled decode pool, visible-priority / replaceable
+  directional prefetch queue; locks никогда не удерживаются во время I/O/decode.
 - `src/library/facts.rs`: bounded header-only EXIF date probe, не декодирует pixels.
 - `src/library/{mod,ui}.rs`: состояние и UI коллекции/альбомов/папок.
 - `src/library/{layout,gallery}.rs`: независимая раскладка строк, виртуализированная
@@ -197,6 +199,76 @@ capabilities vision/embedding обязательны (fail closed для ста�
 
 ## Проверки и инфраструктура
 
+Wide-screen UI override (user preference over Photos reference): title and library
+command panels show_separator_line(false); shared library gutter16px at all widths,
+not120px on desktop. Gallery reserves only88px right date rail at>=900px (no overlay
+over thumbnails); narrow hides rail. Search/tabs/album/folder/status align to16px.
+Cache error modal uses width up to1000px, auto-shrinking variable-height scroll
+contents with wrapped path/reason, not show_rows82px with unused row whitespace.
+
+Unavailable original != decode failure: thumbnail loader checks readable original
+and metadata key BEFORE disk PNG, ready.unavailable separate from failed. Bulk skips
+offline entries (skipped count), preserves disk cache; missing/permission source
+does not raise modal or prune last index. GPU-resident previews checked via bounded
+background probes every~2s; offline drops GPU+frost, leaves compressed PNG. Reappearing
+files reuse cache; no filesystem calls in UI. Expiry90d since use (mtime refreshed
+off-thread at most hourly); quota removes oldest>=7d, recent protected even over quota.
+Reveal Job: Linux FileManager1.ShowItems with xdg-open parent fallback, Explorer
+/select, and Finder open -R; offline finds nearest accessible parent. No shell.
+
+Status UI: `cache_status::{show,scan}` делят quiet48px row. Background=tokens.background,
+separator1px/outline stack icon/two-line typography/local1px progress<=280px.
+В `ui.rs` scanning больше не использует egui spinner/rounded ProgressBar.
+Сохранены pause/stop/resume/dismiss/error-report и точные found/processed counts.
+
+Thumbnail failures: `load_detailed` сохраняет причины metadata/change/decode/write,
+bulk report private `cache/thumbnails-v1/last-build-errors.json`, до4096 entries,
+восстанавливается background startup; меню/клик error strip открывают modal.
+Пути личных файлов не логировать/публиковать. Последняя private диагностика:
+7empty JPG+7invalid JPEG headers+4DNG without embedded JPEG; оригиналы неизменны.
+Ready upload теперь bounded64 visible-first queue, obsolete results удаляются
+при смене plan. Speculative completions не могут занять весь pool, visible upload
+идёт после актуального viewport plan перед draw. Disk cache не равен GPU residency;
+произвольные jumps всё ещё могут показывать краткие placeholders.
+
+UI cache task: src/library/cache_status.rs общий strip gallery/preferences,
+height48, neutral tile, top-edge2px accent, flat40x40 pause/play/stop/dismiss.
+Никаких rounded ProgressBar/badge и нулевого errors counter; завершено/остановлено/
+с ошибками — отдельные тексты, completion закрывается без удаления кеша.
+Запуск только главное меню…; в preferences параметры и ссылка-подсказка на меню.
+
+Bulk cache: thumbnail_jobs Queue.bulk + generation/status, тот же CPU pool,
+visible/ahead first. Bulk results только disk/progress, не GPU upload; текущие
+задачи не прерываются pause/cancel, но новые не выдаются. Остановка/закрытие не
+удаляет уже готовые файлы; resume после restart — повторное нажатие с reuse.
+Default disk quota16GiB, thumbnail_disk_gib0=unlimited; apply_disk_quota worker-only,
+marker `.keep-all` сохраняет явную полную прогрузку от eviction после restart.
+Конечная квота может быть восстановлена в preferences после задачи; marker write
+и prune под общим mutex (никогда на UI thread). Полный build не означает full-size
+image preload: остаются400px previews; originals нужны viewer/print/export.
+
+Responsive slice: scrollbar min64/bar12; Worker.total (MAX=discovery,
+MAX-1=no denominator), count_images перед scan без изменения индекса. Два обхода
+с теми же hidden/symlink/format rules; доступность/live mutations ограничивают total.
+Gallery aspect reflow batched600ms после180ms покоя; фильтрация/month grouping
+повторно используются при изменении только geometry/aspect. Photo draw не копирует
+OCR/text; cache hit O(1), timestamp LRU только при eviction. Resident2048,
+GPU soft512MiB/guard4096, queue2048, prefetch8forward/3back. Eviction budget1ms,
+uploads active2ms/4MiB idle5ms/16MiB. Старые cache/queue числа ниже — история срезов.
+
+Новый срез: active timeline month/year — постоянная двухстрочная подпись.
+Непрерывный размер gallery64..640px в AppSettings.thumbnail_size (0=preset),
+LayoutKey использует size bits, Ctrl-wheel/pinch с row anchor; presets сбрасывают
+custom size даже при повторном клике. Settings I/O debounce500ms после zoom.
+thumbnail_workers0=auto(CPU-1,cap16),1..24manual; pool создаётся один раз, изменение
+числа активных потоков не пересоздаёт уже работающие задачи. Queue768/result32;
+visible first, forward3screens/back1, direction сохраняется по viewport offset.
+Большие/неизвестные uncached images сериализованы (>48MP/64MiB), готовые disk
+previews остаются параллельными. GPU uploads batches<=64/16MiB/5ms CPU budget
+вместо2/frame; actual GPU submit latency отдельно не замерена. Prefetch keys
+защищены от LRU, hard1024; старые плановые очереди заменяются. Atomic unique temp
+cache writes, maintenance512MiB каждые128 completions. Активный decode не прерывается.
+
 `cargo test --locked --all-targets`, `cargo check --locked --all-features`,
 `cargo build --locked`; capture: `RPHOTOS_CAPTURE_DIR=/tmp/opencode/... cargo test
 --locked capture_ -- --ignored --nocapture`. Только новые файлы rustfmt;
@@ -209,6 +281,15 @@ SSH — через amude-lan jump, не напрямую. При новом ис
 GitHub auth — по глобальному AGENTS.md, никогда не читать/выводить token.
 
 ## Packaging groundwork
+
+### Текущий приоритет — внешний вид, не поиск
+
+По просьбе пользователя поиск отложен. Повторный live audit планшета подтвердил
+динамический полый timeline marker и flat flyout с32px строками/иконками.
+Добавлены Favorites четвёртой вкладкой (pager и Ctrl4), hover heart с размытым
+фоном из миниатюры и красным filled состоянием, icons preferences. Исправлен
+small-grid texture thrash:128 idle textures, защищённый visible set до1024,
+старые неиспользуемые textures снова вытесняются. Проверки/ограничения — VERIFICATION.
 
 Оригинальный artwork assets/rphotos.svg, PNG/ICO/ICNS генерирует
 scripts/generate-icons.py (Pillow). Upstream assets сохранены, но application/bundle

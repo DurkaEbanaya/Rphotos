@@ -352,6 +352,12 @@ pub struct AppSettings {
     pub language: crate::library::Language,
     pub appearance: crate::library::Appearance,
     pub thumbnail_density: u8,
+    /// Zero follows the density preset; otherwise continuous logical row height.
+    pub thumbnail_size: f32,
+    /// Zero selects CPU-scaled parallelism; explicit range 1..24.
+    pub thumbnail_workers: usize,
+    /// Disk thumbnail quota in GiB; zero disables automatic eviction.
+    pub thumbnail_disk_gib: u32,
     /// Optional already-installed local Ollama vision model, never auto-downloaded.
     pub local_vision_model: String,
     /// Optional local text embedding model; built only on explicit user request.
@@ -390,6 +396,9 @@ impl Default for AppSettings {
             language: crate::library::Language::default(),
             appearance: crate::library::Appearance::default(),
             thumbnail_density: 1,
+            thumbnail_size: 0.0,
+            thumbnail_workers: 0,
+            thumbnail_disk_gib: 16,
             local_vision_model: String::new(),
             local_embedding_model: String::new(),
             show_footer: true,
