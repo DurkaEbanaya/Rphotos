@@ -48,6 +48,11 @@ Debug/opt-dev builds PASS; нативные library и synthetic PNG viewer по
 раннего выхода, isolated XDG `/tmp/opencode/rphotos-transform-smoke-n928zxs2`.
 Предыдущий library/cache push `be1d64f` прошёл CI на Linux/Windows/macOS:
 https://github.com/DurkaEbanaya/Rphotos/actions/runs/39264202034 .
+Transform run39268172207: Linux/macOS прошли; Windows выявил timing-зависимость
+старого aspect-debounce теста (ожидание всех pending PNG за5с под parallel load).
+Тест теперь изолирует async arrivals после initial snapshot и явно продвигает
+quiet/applied deadlines; проверяет прежние no-reflow-during-scroll и idle-apply
+assertions без benchmark-дедлайна. Decoder/cache integration tests остаются включены.
 
 Latest wide-layout change: window-title separator removed (paint regression),
 desktop library/search/tabs gutter16px instead120px; date rail88px separate from
