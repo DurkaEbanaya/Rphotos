@@ -32,6 +32,7 @@ def package(root, profile, output):
         "docs/PHOTOS-2019-AUDIT.md", "docs/screenshots/README.md",
         "docs/screenshots/collection-light.png", "docs/screenshots/albums.png",
         "docs/screenshots/viewer-light.png",
+        "docs/screenshots/collection-dark.png", "docs/screenshots/viewer-dark.png",
         "Cargo.lock",
     ))
     if system == "linux":

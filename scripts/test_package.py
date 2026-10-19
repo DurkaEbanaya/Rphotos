@@ -25,6 +25,7 @@ class PackagingTests(unittest.TestCase):
             "docs/PHOTOS-2019-AUDIT.md", "docs/screenshots/README.md",
             "docs/screenshots/collection-light.png", "docs/screenshots/albums.png",
             "docs/screenshots/viewer-light.png",
+            "docs/screenshots/collection-dark.png", "docs/screenshots/viewer-dark.png",
             "assets/rphotos.desktop", "Cargo.lock",
             # These must NOT be collected by the archive's strict allowlist.
             "settings.yaml", "private/photo.jpg", "private/hosts.yml",
@@ -65,7 +66,7 @@ class PackagingTests(unittest.TestCase):
                     with tarfile.open(archive) as out:
                         contents = {n: out.extractfile(n).read() for n in out.getnames()}
                 relative = {n.split("/", 1)[1] for n in contents}
-                self.assertEqual(len(relative), 23 if system == "Linux" else 22)
+                self.assertEqual(len(relative), 25 if system == "Linux" else 24)
                 self.assertIn("rphotos.exe" if system == "Windows" else "rphotos", relative)
                 self.assertNotIn("settings.yaml", relative)
                 self.assertFalse(any("private" in n or ".." in Path(n).parts for n in contents))

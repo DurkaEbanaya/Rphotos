@@ -11,6 +11,8 @@ mod layout;
 mod navigation;
 mod preferences;
 mod semantic;
+#[cfg(test)]
+mod showcase;
 mod shell;
 pub mod store;
 mod thumbnail_jobs;

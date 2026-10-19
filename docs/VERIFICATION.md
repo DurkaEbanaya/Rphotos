@@ -78,7 +78,7 @@ Touch regression пересекает границу месяца и прове�
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 235 passed, 0 failed, 12 ignored |
+| `cargo test --locked --all-targets` | 235 passed, 0 failed, 13 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |
@@ -502,6 +502,21 @@ R3 offscreen captures: `/tmp/opencode/rphotos-r3-captures` — восемь со
 thumbnail requests, чтобы не выдавать пустые placeholders за готовый результат.
 
 ## Визуальная проверка
+
+Актуальная публичная галерея в `docs/screenshots`: пять reviewed GPU renders
+collection light/dark, albums, viewer light/dark1600px. Отдельный opt-in
+`capture_showcase` использует только явно указанные CC0/CC BY sample photos,
+временный index/cache, демонстрационные даты/альбомы и не обращается к личной
+библиотеке. Авторы/лицензии и pinned source commit в screenshots/README.md.
+Обычные regression fixtures с градиентами не заменены. Showcase выполнен отдельно;
+он стал13-м ignored test. Исходники фото не включены в repo, только их изображения
+в screenshots с атрибуцией. Main package allowlist расширен до25 Linux/24 other
+entries, Python regression2passed. Preview2 archives исторически23/22 entries.
+
+Preview2 `v0.1.0-dev.2` опубликован из `7f1fa24` после green CI39310043552 всех3OS;
+скачанные CI archives проверены SHA256/binary digest/clean source provenance.
+Новые README screenshots — последующее docs/test-only обновление, не замена
+опубликованных бинарных assets релиза.
 
 **Историческая оценка пользователя до R1:** интерфейс слишком далёк от Photos на планшете.
 Перечисленные ниже успешные сборки и capture-тесты подтверждают работоспособность,

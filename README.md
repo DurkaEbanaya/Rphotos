@@ -6,14 +6,31 @@ Photos 2019. Приоритет: Linux, затем Windows и macOS.
 
 [![Build and test](https://github.com/DurkaEbanaya/Rphotos/actions/workflows/ci.yml/badge.svg)](https://github.com/DurkaEbanaya/Rphotos/actions/workflows/ci.yml)
 
-[Скачать Development Preview 1 — Linux / Windows / macOS](https://github.com/DurkaEbanaya/Rphotos/releases/tag/v0.1.0-dev.1).
+[Скачать Development Preview 2 — Linux / Windows / macOS](https://github.com/DurkaEbanaya/Rphotos/releases/tag/v0.1.0-dev.2).
 Это предварительная сборка, не stable release; сначала прочтите [ограничения](docs/PREVIEW.md).
 
 ![Коллекция Rphotos](docs/screenshots/collection-light.png)
 
-Снимок настоящего offscreen GPU-render приложения на синтетических изображениях,
-не макет. Это не демонстрация compositor blur или качества распознавания.
-[Альбомы](docs/screenshots/albums.png) · [Просмотрщик](docs/screenshots/viewer-light.png)
+Актуальный интерфейс приложения с демонстрационной фотобиблиотекой — настоящий
+GPU-render, не макет. [Авторы фотографий и лицензии](docs/screenshots/README.md).
+Размытие системного фона и качество распознавания здесь не демонстрируются.
+
+<details>
+<summary>Ещё скриншоты: тёмная тема, альбомы и просмотрщик</summary>
+
+### Коллекция · тёмная тема
+![Тёмная коллекция](docs/screenshots/collection-dark.png)
+
+### Альбомы
+![Альбомы Rphotos](docs/screenshots/albums.png)
+
+### Просмотр фотографии · тёмная тема
+![Тёмный просмотрщик](docs/screenshots/viewer-dark.png)
+
+### Просмотр фотографии · светлая тема
+![Светлый просмотрщик](docs/screenshots/viewer-light.png)
+
+</details>
 
 ## Текущий статус
 
