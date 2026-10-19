@@ -6,7 +6,7 @@ mod discovery;
 mod facts;
 mod gallery;
 mod gestures;
-mod icons;
+pub(crate) mod icons;
 mod layout;
 mod navigation;
 mod preferences;

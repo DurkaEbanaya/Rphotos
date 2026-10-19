@@ -174,6 +174,14 @@ impl Pane {
         ctx.request_repaint();
     }
 
+    /// Invalidate every viewer cache after an explicit file edit. Old in-flight
+    /// decoder results belong to the dropped cache and cannot replace this image.
+    pub(crate) fn reload_edited(&mut self, path: &Path, ctx: &egui::Context) {
+        if self.image_paths.iter().any(|p| p == path) {
+            self.open_library(self.image_paths.clone(), self.current_index, ctx);
+        }
+    }
+
     /// Synchronous decode fallback for slider drag and jump.
     /// Checks the GPU-backed LRU first to skip both decode and re-upload on
     /// revisits. On miss, decodes from disk and uploads a new texture via
@@ -771,7 +779,7 @@ impl Pane {
 
         // 2. Direct input: applies immediately and cancels any running animation.
         //    Zoom: scroll wheel (when enabled) or Ctrl/Cmd+scroll, plus pinch.
-        if (response.hovered() || ui.input(|i| i.multi_touch().is_some_and(|g| available.contains(g.start_pos))))
+        if ui.is_enabled() && (response.hovered() || ui.input(|i| i.multi_touch().is_some_and(|g| available.contains(g.start_pos))))
             && (self.mouse_wheel_zoom || ui.input(|i| i.modifiers.command || i.zoom_delta() != 1.0)) {
             self.zoom_image(ui, &response, &available);
         }
@@ -788,7 +796,7 @@ impl Pane {
                 self.touch_drag += response.drag_delta();
             } else { self.pan += response.drag_delta(); }
         }
-        if let Some(gesture) = multi_touch.filter(|g| available.contains(g.start_pos)) {
+        if let Some(gesture) = multi_touch.filter(|g| ui.is_enabled() && available.contains(g.start_pos)) {
             self.pan += gesture.translation_delta;
             self.touch_drag = egui::Vec2::ZERO;
         }

@@ -4,6 +4,7 @@ use eframe::egui;
 use std::{path::PathBuf, sync::mpsc};
 
 pub(crate) enum Job {
+    Resize(PathBuf, super::resize::Options),
     SaveCopy(PathBuf),
     OpenWith(PathBuf),
     Reveal(PathBuf),
@@ -62,10 +63,18 @@ impl Jobs {
                     .save_file(),
             ),
             Job::SaveCopy(path) => Some(copy_dialog(path)),
+            Job::Resize(path,options) => Some(resize_dialog(path,*options)),
             _ => None,
         };
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(|| match job {
+                Job::Resize(path,options) => {
+                    #[cfg(not(target_os="macos"))]
+                    let output=resize_dialog(&path,options);
+                    #[cfg(target_os="macos")]
+                    let output=output.flatten();
+                    output.map_or(Ok(()),|destination|super::resize::save(&path,&destination,options))
+                }
                 Job::SaveCopy(path) => {
                     #[cfg(not(target_os = "macos"))]
                     let output = copy_dialog(&path);
@@ -142,6 +151,13 @@ fn copy_dialog(path: &std::path::Path) -> Option<PathBuf> {
         format!("{name}-copy.{extension}")
     };
     rfd::FileDialog::new().set_file_name(suggested).save_file()
+}
+
+fn resize_dialog(path: &std::path::Path,options: super::resize::Options) -> Option<PathBuf> {
+    let name=path.file_stem().unwrap_or_default().to_string_lossy();
+    let extension=if options.jpeg {"jpg"}else{"png"};
+    rfd::FileDialog::new().add_filter(if options.jpeg {"JPEG"}else{"PNG"},&[extension])
+        .set_file_name(format!("{name}-{}x{}.{extension}",options.width,options.height)).save_file()
 }
 
 fn email(paths: &[PathBuf]) -> anyhow::Result<()> {

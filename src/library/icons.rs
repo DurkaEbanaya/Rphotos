@@ -2,7 +2,7 @@
 use eframe::egui::{self, pos2, vec2, Color32, Rect, Stroke};
 
 #[derive(Clone, Copy)]
-pub(super) enum Icon {
+pub(crate) enum Icon {
     Refresh,
     Slideshow,
     Settings,
@@ -15,7 +15,7 @@ pub(super) enum Icon {
     Heart,
 }
 
-pub(super) fn paint(p: &egui::Painter, r: Rect, icon: Icon, color: Color32, filled: bool) {
+pub(crate) fn paint(p: &egui::Painter, r: Rect, icon: Icon, color: Color32, filled: bool) {
     let c = r.center();
     let s = r.width().min(r.height()) / 24.0;
     let pt = |x: f32, y: f32| c + vec2(x * s, y * s);

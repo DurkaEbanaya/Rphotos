@@ -211,7 +211,7 @@ pub(crate) fn export(paths: &[std::path::PathBuf], path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn paper_rgb(image: image::DynamicImage) -> image::RgbImage {
+pub(super) fn paper_rgb(image: image::DynamicImage) -> image::RgbImage {
     if !image.color().has_alpha() {
         return image.to_rgb8();
     }

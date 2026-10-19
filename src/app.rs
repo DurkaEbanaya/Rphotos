@@ -871,6 +871,7 @@ impl eframe::App for App {
             ctx.data_mut(|d|d.insert_temp(egui::Id::new("rphotos.viewer.favorite"),favorite));
             let blocked = self.library.has_dialog() || self.pending_permanent_delete.is_some();
             match self.viewer.show(ctx, &mut self.panes[0], &mut self.settings, blocked) {
+                crate::viewer::Action::Edited(_path) => { self.library.refresh(); }
                 crate::viewer::Action::Favorite => {
                     if let Some(path)=self.panes[0].image_paths.get(self.panes[0].current_index) {
                         if !self.library.toggle_favorite(path) {self.show_toast(self.settings.language.text("Сначала добавьте папку в библиотеку", "Add this folder to the library first").into(),false);}

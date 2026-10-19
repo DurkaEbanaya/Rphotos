@@ -8,7 +8,7 @@
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 195 passed, 0 failed, 11 ignored |
+| `cargo test --locked --all-targets` | 208 passed, 0 failed, 11 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |
@@ -28,6 +28,26 @@
 отсутствии CJK-шрифта; кириллица на GPU-снимках отображается корректно.
 
 ## Что покрывают новые тесты
+
+Поворот/отражение: все8 EXIF orientations ×4 transforms совпадают с преобразованием
+уже отображаемых pixels; little/big-endian EXIF и сохранность прежних TIFF offsets.
+JPEG/PNG после сохранения имеют те же decoder pixels до EXIF (без re-encoding);
+undo восстанавливает точные байты. Проверены повреждённые/animated containers,
+read-only/symbolic/hard links, concurrent source changes, single in-flight worker
+и сохранность прежнего undo после неудачного нового edit. Kittest: rotate→flip→undo→
+rotate-left, async reload правильных размеров, блокировка перехода при сохранении.
+Тесты изменяют только сгенерированные фото; личные файлы не редактировались.
+Resize: PNG/JPEG dimensions, white alpha, no-clobber исходника/существующего
+destination, safety limits и ориентация, применённая к пикселям без повторного
+EXIF-поворота. Kittest: presets/formats/cancel/modal navigation guard. Native
+save chooser не вызывается автотестом и остаётся отдельной ручной проверкой.
+Narrow overflow: прокрутка достигает «Настройки», wheel над меню не листает фото.
+GPU viewer capture PASS:9 synthetic состояний в `/tmp/opencode/rphotos-edit-final-captures`;
+поворот, transform menu, resize и narrow resize/menu реально просмотрены.
+Debug/opt-dev builds PASS; нативные library и synthetic PNG viewer по5с без
+раннего выхода, isolated XDG `/tmp/opencode/rphotos-transform-smoke-n928zxs2`.
+Предыдущий library/cache push `be1d64f` прошёл CI на Linux/Windows/macOS:
+https://github.com/DurkaEbanaya/Rphotos/actions/runs/39264202034 .
 
 Latest wide-layout change: window-title separator removed (paint regression),
 desktop library/search/tabs gutter16px instead120px; date rail88px separate from

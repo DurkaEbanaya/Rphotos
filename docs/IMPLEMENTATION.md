@@ -12,7 +12,8 @@
 4. [VERIFICATION.md](VERIFICATION.md): только действительно выполненные проверки.
 
 Приоритет: Linux/KDE Wayland, затем Windows/macOS. RU/EN, touch+мышь+клавиатура.
-Без видео, People, OneDrive, preview, USB/camera import; редактор отложен.
+Без видео, People, OneDrive, preview, USB/camera import; большой редактор отложен.
+По новому запросу включены поворот/отражение JPEG/PNG и одноуровневая отмена.
 Локальные OCR/content descriptions и date auto albums, Linux print/PDF/share
 подключены в базовом виде; ограничения и непроверенные интеграции — ниже.
 Приватные скриншоты/деревья с планшета не добавлять в Git.
@@ -37,7 +38,22 @@
 - `src/platform/{printing,jobs,clipboard,backdrop}.rs`: PDF/Print portal, share jobs,
   file clipboard и Wayland blur; `src/library/discovery.rs`: album cards/search suggestions.
 - `src/platform/files.rs`: Save copy с atomic no-clobber и Linux OpenFile portal
-  ask(true). Не подменяет Share и не меняет оригинал.
+   ask(true). Не подменяет Share и не меняет оригинал.
+- `src/platform/edits.rs`: lossless EXIF orientation transforms JPEG/PNG,
+  guarded atomic replacement/byte-exact undo на отдельном worker;128MiB limit,
+  отказ symbolic/hard links/read-only/animated PNG/неоднозначным EXIF. TIFF offsets
+  сохраняются при добавлении orientation через новый IFD0; JPEG entropy/PNG IDAT
+  не перекодируются. Навигация заблокирована во время сохранения, Pane caches
+  пересоздаются после edit, app запрашивает refresh индекса. Все8 EXIF transforms
+  проверены pixel-equivalence; undo проверяет hash текущего файла. Это не защита
+  от враждебного racing filesystem: между финальной сверкой и rename остаётся
+  обычное TOCTOU-окно; ACL/xattrs/ownership не обещано сохранять. Original mode
+  сохраняется. Undo хранит только последнюю операцию в памяти viewer.
+- `src/platform/resize.rs`: oriented resize/Lanczos3 в новый PNG/JPEG, атомарный
+  no-clobber,1..16384px/48MP, JPEG quality10..100, white alpha compositing. Не копирует
+  metadata/ICC; modal предупреждает. Native chooser через Jobs (macOS main thread),
+  encode на worker. Viewer overflow scrollable на маленьком экране. Crop/color
+  corrections по-прежнему не подключены, не считать большой редактор готовым.
 - `src/viewer.rs`: одиночный viewer. `src/pane.rs`, `src/cache.rs`: decode/render.
 - `src/app.rs`: маршрутизация сцен; comparison/bench пока используют старую UI.
 - `src/settings.rs`: persistent settings с обратносовместимыми defaults.

@@ -10,6 +10,10 @@ use crate::{
 
 #[derive(Default)]
 pub(crate) struct Viewer {
+    resize: Option<Resize>,
+    edits: crate::platform::edits::Edits,
+    transform_requested: Option<crate::platform::edits::Transform>,
+    undo_requested: bool,
     overflow_open_last_frame: bool,
     jobs: crate::platform::jobs::Jobs,
     share_open: bool,
@@ -20,6 +24,16 @@ pub(crate) struct Viewer {
     slideshow_at: Option<f64>,
     image_rect: Option<egui::Rect>,
     zoom_anchor: Option<egui::Rect>,
+}
+
+struct Resize {
+    path: std::path::PathBuf,
+    original: [u32; 2],
+    width: u32,
+    height: u32,
+    linked: bool,
+    quality: u8,
+    jpeg: bool,
 }
 
 #[cfg(test)]
@@ -66,6 +80,149 @@ mod tests {
                     Action::None,
                 ),
             )
+    }
+
+    #[test]
+    fn narrow_overflow_scroll_reaches_settings() {
+        let (_temp, pane) = fixture();
+        let mut h = harness(pane);
+        h.set_size(egui::vec2(500.0, 700.0));
+        h.run_steps(3);
+        h.get_by_label("…").click();
+        h.run_steps(3);
+        h.input_mut().events.extend([
+            egui::Event::PointerMoved(egui::pos2(430.0, 350.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -1200.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.run_steps(15);
+        h.get_by_label("Настройки").click();
+        h.run_steps(1);
+        assert_eq!(h.state().3, Action::Settings);
+        assert_eq!(
+            h.state().1.current_index,
+            0,
+            "wheel over menu must not navigate photo"
+        );
+    }
+
+    #[test]
+    fn resize_modal_presets_formats_cancel_and_navigation_guard() {
+        let (_temp, pane) = fixture();
+        let path = pane.image_paths[0].clone();
+        let before = std::fs::read(&path).unwrap();
+        let mut h = harness(pane);
+        h.run_steps(3);
+        h.get_by_label("…").click();
+        h.run_steps(2);
+        h.get_by_label("Изменить размер…").click();
+        h.run_steps(2);
+        assert!(h.state().0.resize.is_some());
+        h.get_by_label("50%").click();
+        h.run_steps(2);
+        let resize = h.state().0.resize.as_ref().unwrap();
+        assert_eq!((resize.width, resize.height), (480, 300));
+        h.get_by_label("JPEG").click();
+        h.run_steps(2);
+        assert!(h.state().0.resize.as_ref().unwrap().jpeg);
+        h.press_key(egui::Key::ArrowRight);
+        h.run_steps(2);
+        assert_eq!(h.state().1.current_index, 0);
+        h.get_by_label("Отмена").click();
+        h.run_steps(2);
+        assert!(h.state().0.resize.is_none());
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn rotate_flip_and_undo_reload_pixels() {
+        let (_temp, pane) = fixture();
+        let path = pane.image_paths[0].clone();
+        let original = std::fs::read(&path).unwrap();
+        let mut h = harness(pane);
+        h.run_steps(3);
+        assert!(!h.get_by_label("Повернуть вправо").is_disabled());
+        h.get_by_label("Повернуть вправо").click();
+        h.run_steps(1);
+        if h.state().0.edits.busy() {
+            h.press_key(egui::Key::ArrowRight);
+            h.run_steps(1);
+            assert_eq!(
+                h.state().1.current_index,
+                0,
+                "navigation must not race a save"
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while h.state().0.edits.busy()
+            || h.state()
+                .1
+                .current_record
+                .as_ref()
+                .and_then(|r| r.dimensions)
+                != Some([600, 960])
+        {
+            h.run_steps(2);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{:?}",
+                h.state().0.edits.error
+            );
+        }
+        assert_eq!(h.state().1.current_index, 0);
+        h.get_by_label("…").click();
+        h.run_steps(2);
+        assert!(!h.get_by_label("Показать в проводнике").is_disabled());
+        h.get_by_label("Отразить по горизонтали").click();
+        h.run_steps(1);
+        while h.state().0.edits.busy() {
+            h.run_steps(2);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(std::time::Instant::now() < deadline);
+        }
+        h.run_steps(3);
+        h.get_by_label("…").click();
+        h.run_steps(2);
+        h.get_by_label("Отменить последний поворот / отражение")
+            .click();
+        h.run_steps(1);
+        while h.state().0.edits.busy() {
+            h.run_steps(2);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(std::time::Instant::now() < deadline);
+        }
+        assert_eq!(
+            crate::file_io::load_image(&path).orientation,
+            image::metadata::Orientation::Rotate90
+        );
+        while h.state().1.current_texture.is_none() {
+            h.run_steps(2);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(std::time::Instant::now() < deadline);
+        }
+        h.run_steps(3);
+        h.get_by_label("…").click();
+        h.run_steps(2);
+        assert!(!h.get_by_label("Повернуть влево").is_disabled());
+        h.get_by_label("Повернуть влево").click();
+        h.run_steps(1);
+        while h.state().0.edits.busy() {
+            h.run_steps(2);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(std::time::Instant::now() < deadline);
+        }
+        assert_eq!(
+            crate::file_io::load_image(&path).orientation,
+            image::metadata::Orientation::NoTransforms
+        );
+        assert_eq!(
+            image::load_from_memory(&std::fs::read(&path).unwrap()).unwrap(),
+            image::load_from_memory(&original).unwrap()
+        );
     }
 
     #[test]
@@ -389,8 +546,60 @@ mod tests {
                 Appearance::Dark,
                 false,
             ),
+            (
+                "viewer-rotated",
+                [1440.0, 900.0],
+                Language::Ru,
+                Appearance::Light,
+                false,
+            ),
+            (
+                "viewer-transform-menu",
+                [1500.0, 960.0],
+                Language::Ru,
+                Appearance::Light,
+                false,
+            ),
+            (
+                "viewer-resize",
+                [1100.0, 850.0],
+                Language::Ru,
+                Appearance::Light,
+                false,
+            ),
+            (
+                "viewer-narrow-menu",
+                [500.0, 700.0],
+                Language::En,
+                Appearance::Light,
+                false,
+            ),
+            (
+                "viewer-resize-narrow",
+                [500.0, 700.0],
+                Language::Ru,
+                Appearance::Light,
+                false,
+            ),
         ] {
-            let (_temp, pane) = fixture();
+            let (_temp, mut pane) = fixture();
+            if name == "viewer-rotated" {
+                let ctx = egui::Context::default();
+                let mut edits = crate::platform::edits::Edits::default();
+                edits.start(
+                    pane.image_paths[0].clone(),
+                    Some(crate::platform::edits::Transform::Right),
+                    &ctx,
+                );
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while edits.busy() {
+                    edits.poll();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    assert!(std::time::Instant::now() < deadline);
+                }
+                assert!(edits.error.is_none());
+                pane.current_record = Some(crate::file_io::load_image(&pane.image_paths[0]).record);
+            }
             let settings = AppSettings {
                 language: lang,
                 appearance,
@@ -406,6 +615,9 @@ mod tests {
                 .wgpu()
                 .build_state(
                     |ctx, (viewer, pane, settings, uploaded)| {
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("rphotos.viewer.favorite"), true)
+                        });
                         // The fixture's decode context is not the harness renderer's
                         // texture registry. Upload synthetic pixels into this context.
                         if !*uploaded {
@@ -425,6 +637,22 @@ mod tests {
                     (viewer, pane, settings, false),
                 );
             h.run_steps(5);
+            if matches!(
+                name,
+                "viewer-transform-menu"
+                    | "viewer-narrow-menu"
+                    | "viewer-resize"
+                    | "viewer-resize-narrow"
+            ) {
+                h.get_by_label("…").click();
+                h.run_steps(3);
+                if matches!(name, "viewer-resize" | "viewer-resize-narrow") {
+                    h.get_by_label("Изменить размер…").click();
+                    h.run_steps(3);
+                    h.get_by_label("50%").click();
+                    h.run_steps(2);
+                }
+            }
             h.render()
                 .unwrap()
                 .save(output.join(format!("{name}.png")))
@@ -435,6 +663,7 @@ mod tests {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Action {
+    Edited(std::path::PathBuf),
     Favorite,
     Back,
     AddToAlbum,
@@ -498,23 +727,21 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, size: egui::Vec2) -> 
             line(p(2.0, -2.0), p(2.0, 5.0));
         }
         Icon::Favorite => {
-            let points = [
-                (-8.0, -1.0),
-                (-8.0, -5.0),
-                (-5.0, -8.0),
-                (-2.0, -8.0),
-                (0.0, -5.0),
-                (2.0, -8.0),
-                (5.0, -8.0),
-                (8.0, -5.0),
-                (8.0, -1.0),
-                (0.0, 7.0),
-                (-8.0, -1.0),
-            ];
-            painter.add(egui::Shape::line(
-                points.into_iter().map(|(x, y)| p(x, y)).collect(),
-                stroke,
-            ));
+            let favorite = ui.ctx().data(|d| {
+                d.get_temp::<bool>(egui::Id::new("rphotos.viewer.favorite"))
+                    .unwrap_or(false)
+            });
+            crate::library::icons::paint(
+                &painter,
+                egui::Rect::from_center_size(center, egui::vec2(24.0, 24.0)),
+                crate::library::icons::Icon::Heart,
+                if favorite {
+                    egui::Color32::from_rgb(220, 35, 55)
+                } else {
+                    stroke.color
+                },
+                favorite,
+            );
         }
         Icon::Rotate => {
             let points = (0..=18)
@@ -647,13 +874,24 @@ fn zoom_from_position(position: f32) -> f32 {
     20.0_f32.powf(position.clamp(0.0, 100.0) / 100.0)
 }
 
+fn can_transform(pane: &Pane) -> bool {
+    pane.current_texture.is_some()
+        && pane
+            .current_record
+            .as_ref()
+            .is_some_and(|r| matches!(r.format.as_deref(), Some("JPEG" | "PNG")))
+}
+
 impl Viewer {
     pub(crate) fn start_slideshow(&mut self, ctx: &egui::Context) {
         self.slideshow_at = Some(ctx.input(|i| i.time) + 4.0);
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
     }
     pub fn modal_open(&self) -> bool {
-        self.delete_path.is_some()
+        self.resize.is_some()
+            || self.edits.busy()
+            || self.edits.error.is_some()
+            || self.delete_path.is_some()
             || self.settings_open
             || self.share_open
             || self.jobs.message.is_some()
@@ -671,7 +909,12 @@ impl Viewer {
         let tokens = Tokens::new(settings.appearance, ctx);
         tokens.apply(ctx);
         let before = settings.clone();
-        let mut action = Action::None;
+        let mut action = if let Some(path) = self.edits.poll() {
+            pane.reload_edited(&path, ctx);
+            Action::Edited(path)
+        } else {
+            Action::None
+        };
         let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
         let now = ctx.input(|i| i.time);
         let disabled = blocked || self.modal_open();
@@ -698,6 +941,7 @@ impl Viewer {
         }
 
         let overflow_was_open = std::mem::take(&mut self.overflow_open_last_frame);
+        let text_input = ctx.wants_keyboard_input();
         if !disabled && !overflow_was_open && !ctx.memory(|m| m.any_popup_open()) {
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::Escape) {
@@ -731,6 +975,24 @@ impl Viewer {
                 }
                 if i.key_pressed(egui::Key::I) {
                     self.info_open = !self.info_open;
+                }
+                if !text_input && i.modifiers.command {
+                    if i.key_pressed(egui::Key::R) && !self.jobs.busy() && can_transform(pane) {
+                        self.transform_requested = Some(if i.modifiers.shift {
+                            crate::platform::edits::Transform::Left
+                        } else {
+                            crate::platform::edits::Transform::Right
+                        });
+                    }
+                    if i.key_pressed(egui::Key::Z)
+                        && !self.jobs.busy()
+                        && pane
+                            .image_paths
+                            .get(pane.current_index)
+                            .is_some_and(|p| self.edits.can_undo(p))
+                    {
+                        self.undo_requested = true;
+                    }
                 }
                 if i.events.iter().any(|e| {
                     matches!(
@@ -854,36 +1116,33 @@ impl Viewer {
                                 },
                                 egui::vec2(49.5, 48.0),
                             );
-                            if favorite {
-                                ui.painter().hline(
-                                    response.rect.x_range().shrink(14.0),
-                                    response.rect.bottom() - 3.0,
-                                    egui::Stroke::new(2.0_f32, tokens.accent),
-                                );
-                            }
                             if response.clicked() {
                                 action = Action::Favorite;
                             }
-                            for (icon, label) in [
-                                (
+                            ui.add_enabled_ui(!self.jobs.busy() && can_transform(pane), |ui| {
+                                if icon_button(
+                                    ui,
                                     Icon::Rotate,
-                                    lang.text(
-                                        "Поворот — редактор отложен",
-                                        "Rotate — editor deferred",
-                                    ),
-                                ),
-                                (
+                                    lang.text("Повернуть вправо", "Rotate right"),
+                                    egui::vec2(49.5, 48.0),
+                                )
+                                .clicked()
+                                {
+                                    self.transform_requested =
+                                        Some(crate::platform::edits::Transform::Right);
+                                }
+                            });
+                            ui.add_enabled_ui(false, |ui| {
+                                icon_button(
+                                    ui,
                                     Icon::Crop,
                                     lang.text(
                                         "Обрезка — редактор отложен",
                                         "Crop — editor deferred",
                                     ),
-                                ),
-                            ] {
-                                ui.add_enabled_ui(false, |ui| {
-                                    icon_button(ui, icon, label, egui::vec2(49.5, 48.0));
-                                });
-                            }
+                                    egui::vec2(49.5, 48.0),
+                                );
+                            });
                         },
                     );
                     let right_width = if narrow { 112.0 } else { 317.0 };
@@ -900,110 +1159,221 @@ impl Viewer {
                             ui.style_mut().spacing.interact_size = egui::vec2(48.0, 48.0);
                             ui.menu_button("…", |ui| {
                                 self.overflow_open_last_frame = true;
-                                ui.set_min_width(180.0);
-                                ui.style_mut().spacing.interact_size.y = 32.0;
-                                ui.style_mut().spacing.button_padding = egui::vec2(12.0, 6.0);
-                                if narrow {
-                                    if ui.button(lang.text("Поделиться…", "Share…")).clicked()
-                                    {
-                                        self.share_open = true;
-                                        ui.close_menu();
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            !self.jobs.busy(),
-                                            egui::Button::new(lang.text("Печать…", "Print…")),
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(path) = pane.image_paths.get(pane.current_index)
-                                        {
-                                            self.jobs.start(
-                                                crate::platform::jobs::Job::Print(vec![
-                                                    path.clone()
-                                                ]),
-                                                ctx,
-                                            );
-                                        }
-                                        ui.close_menu();
-                                    }
-                                    ui.separator();
-                                }
-                                if ui.button(lang.text("Показ слайдов", "Slideshow")).clicked()
-                                {
-                                    self.slideshow_at = Some(now + 4.0);
-                                    self.zoom_open = false;
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                for (label, kind) in [
-                                    (lang.text("Сохранить копию…", "Save a copy…"), 0),
-                                    (lang.text("Копировать файл", "Copy file"), 1),
-                                    (lang.text("Открыть с помощью…", "Open with…"), 2),
-                                ] {
-                                    if ui
-                                        .add_enabled(
-                                            !self.jobs.busy()
-                                                && (kind != 2 || cfg!(target_os = "linux")),
-                                            egui::Button::new(label),
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(path) = pane.image_paths.get(pane.current_index)
-                                        {
-                                            use crate::platform::jobs::Job;
-                                            let job = match kind {
-                                                0 => Job::SaveCopy(path.clone()),
-                                                1 => Job::Copy(vec![path.clone()]),
-                                                _ => Job::OpenWith(path.clone()),
-                                            };
-                                            self.jobs.start(job, ctx);
-                                        }
-                                        ui.close_menu();
-                                    }
-                                }
-                                ui.separator();
-                                if ui
-                                    .button(lang.text("По размеру окна", "Fit to window"))
-                                    .clicked()
-                                {
-                                    pane.fit_view();
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .button(
-                                        lang.text(
-                                            "Фактический размер · 100%",
-                                            "Actual size · 100%",
+                                egui::ScrollArea::vertical()
+                                    .max_height((ctx.screen_rect().height() - 100.0).max(100.0))
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(180.0);
+                                        ui.style_mut().spacing.interact_size.y = 32.0;
+                                        ui.style_mut().spacing.button_padding =
+                                            egui::vec2(12.0, 6.0);
+                                        ui.add_enabled_ui(
+                                            !self.jobs.busy() && can_transform(pane),
+                                            |ui| {
+                                                for (transform, label) in [
+                                        (
+                                            crate::platform::edits::Transform::Left,
+                                            lang.text("Повернуть влево", "Rotate left"),
                                         ),
-                                    )
-                                    .clicked()
-                                {
-                                    if let Some(rect) = self.image_rect {
-                                        pane.actual_size(rect, ctx.pixels_per_point());
+                                        (
+                                            crate::platform::edits::Transform::Horizontal,
+                                            lang.text("Отразить по горизонтали", "Flip horizontal"),
+                                        ),
+                                        (
+                                            crate::platform::edits::Transform::Vertical,
+                                            lang.text("Отразить по вертикали", "Flip vertical"),
+                                        ),
+                                    ] {
+                                        if ui.button(label).clicked() {
+                                            self.transform_requested = Some(transform);
+                                            ui.close_menu();
+                                        }
                                     }
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .button(lang.text("Сведения о файле · I", "File info · I"))
-                                    .clicked()
-                                {
-                                    self.info_open = !self.info_open;
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .button(lang.text("Сравнить два снимка", "Compare two photos"))
-                                    .clicked()
-                                {
-                                    action = Action::Compare;
-                                    ui.close_menu();
-                                }
-                                if ui.button(lang.text("Настройки", "Settings")).clicked()
-                                {
-                                    action = Action::Settings;
-                                    ui.close_menu();
-                                }
+                                            },
+                                        );
+                                        if ui
+                                            .add_enabled(
+                                                pane.image_paths
+                                                    .get(pane.current_index)
+                                                    .is_some_and(|p| self.edits.can_undo(p))
+                                                    && !self.jobs.busy(),
+                                                egui::Button::new(lang.text(
+                                                    "Отменить последний поворот / отражение",
+                                                    "Undo last rotate / flip",
+                                                )),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.undo_requested = true;
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        if ui
+                                            .add_enabled(
+                                                !self.jobs.busy() && pane.current_texture.is_some(),
+                                                egui::Button::new(
+                                                    lang.text("Изменить размер…", "Resize…"),
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            if let (Some(path), Some(dimensions)) = (
+                                                pane.image_paths.get(pane.current_index),
+                                                pane.current_record
+                                                    .as_ref()
+                                                    .and_then(|r| r.dimensions),
+                                            ) {
+                                                self.resize = Some(Resize {
+                                                    path: path.clone(),
+                                                    original: dimensions,
+                                                    width: dimensions[0],
+                                                    height: dimensions[1],
+                                                    linked: true,
+                                                    quality: 90,
+                                                    jpeg: false,
+                                                });
+                                                self.slideshow_at = None;
+                                            }
+                                            ui.close_menu();
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                !self.jobs.busy(),
+                                                egui::Button::new(lang.text(
+                                                    "Показать в проводнике",
+                                                    "Show in file manager",
+                                                )),
+                                            )
+                                            .clicked()
+                                        {
+                                            if let Some(path) =
+                                                pane.image_paths.get(pane.current_index)
+                                            {
+                                                self.jobs.start(
+                                                    crate::platform::jobs::Job::Reveal(
+                                                        path.clone(),
+                                                    ),
+                                                    ctx,
+                                                );
+                                            }
+                                            ui.close_menu();
+                                        }
+                                        if narrow {
+                                            if ui
+                                                .button(lang.text("Поделиться…", "Share…"))
+                                                .clicked()
+                                            {
+                                                self.share_open = true;
+                                                ui.close_menu();
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    !self.jobs.busy(),
+                                                    egui::Button::new(
+                                                        lang.text("Печать…", "Print…"),
+                                                    ),
+                                                )
+                                                .clicked()
+                                            {
+                                                if let Some(path) =
+                                                    pane.image_paths.get(pane.current_index)
+                                                {
+                                                    self.jobs.start(
+                                                        crate::platform::jobs::Job::Print(vec![
+                                                            path.clone(),
+                                                        ]),
+                                                        ctx,
+                                                    );
+                                                }
+                                                ui.close_menu();
+                                            }
+                                            ui.separator();
+                                        }
+                                        if ui
+                                            .button(lang.text("Показ слайдов", "Slideshow"))
+                                            .clicked()
+                                        {
+                                            self.slideshow_at = Some(now + 4.0);
+                                            self.zoom_open = false;
+                                            ctx.send_viewport_cmd(
+                                                egui::ViewportCommand::Fullscreen(true),
+                                            );
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        for (label, kind) in [
+                                            (lang.text("Сохранить копию…", "Save a copy…"), 0),
+                                            (lang.text("Копировать файл", "Copy file"), 1),
+                                            (lang.text("Открыть с помощью…", "Open with…"), 2),
+                                        ] {
+                                            if ui
+                                                .add_enabled(
+                                                    !self.jobs.busy()
+                                                        && (kind != 2 || cfg!(target_os = "linux")),
+                                                    egui::Button::new(label),
+                                                )
+                                                .clicked()
+                                            {
+                                                if let Some(path) =
+                                                    pane.image_paths.get(pane.current_index)
+                                                {
+                                                    use crate::platform::jobs::Job;
+                                                    let job = match kind {
+                                                        0 => Job::SaveCopy(path.clone()),
+                                                        1 => Job::Copy(vec![path.clone()]),
+                                                        _ => Job::OpenWith(path.clone()),
+                                                    };
+                                                    self.jobs.start(job, ctx);
+                                                }
+                                                ui.close_menu();
+                                            }
+                                        }
+                                        ui.separator();
+                                        if ui
+                                            .button(lang.text("По размеру окна", "Fit to window"))
+                                            .clicked()
+                                        {
+                                            pane.fit_view();
+                                            ui.close_menu();
+                                        }
+                                        if ui
+                                            .button(lang.text(
+                                                "Фактический размер · 100%",
+                                                "Actual size · 100%",
+                                            ))
+                                            .clicked()
+                                        {
+                                            if let Some(rect) = self.image_rect {
+                                                pane.actual_size(rect, ctx.pixels_per_point());
+                                            }
+                                            ui.close_menu();
+                                        }
+                                        if ui
+                                            .button(
+                                                lang.text("Сведения о файле · I", "File info · I"),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.info_open = !self.info_open;
+                                            ui.close_menu();
+                                        }
+                                        if ui
+                                            .button(
+                                                lang.text(
+                                                    "Сравнить два снимка",
+                                                    "Compare two photos",
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            action = Action::Compare;
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(lang.text("Настройки", "Settings")).clicked()
+                                        {
+                                            action = Action::Settings;
+                                            ui.close_menu();
+                                        }
+                                    });
                             });
                             if !narrow {
                                 ui.add_enabled_ui(!self.jobs.busy(), |ui| {
@@ -1227,8 +1597,87 @@ impl Viewer {
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        if self.transform_requested.is_some() || self.undo_requested {
+            direction = 0;
+        }
         if direction != 0 {
             pane.navigate_background(direction, ctx);
+        }
+        if let Some(path) = pane.image_paths.get(pane.current_index).cloned() {
+            if let Some(transform) = self.transform_requested.take() {
+                self.slideshow_at = None;
+                self.zoom_open = false;
+                self.edits.start(path, Some(transform), ctx);
+            } else if std::mem::take(&mut self.undo_requested) {
+                self.edits.start(path, None, ctx);
+            }
+        }
+        if let Some(resize) = &mut self.resize {
+            let result=egui::Modal::new(egui::Id::new("photo_resize"))
+                .frame(egui::Frame::NONE.fill(if ctx.style().visuals.dark_mode {egui::Color32::from_gray(40)}else{egui::Color32::from_gray(242)})
+                    .stroke(egui::Stroke::new(1.0_f32,tokens.accent)).inner_margin(24))
+                .backdrop_color(if ctx.style().visuals.dark_mode {egui::Color32::from_black_alpha(110)}else{egui::Color32::from_white_alpha(160)})
+                .show(ctx,|ui|{
+                ui.set_width(420.0_f32.min((ctx.screen_rect().width()-100.0).max(200.0)));ui.heading(lang.text("Изменить размер","Resize"));
+                ui.label(format!("{} × {} px",resize.original[0],resize.original[1]));
+                ui.horizontal(|ui|{
+                    ui.label(lang.text("Ширина","Width"));
+                    if ui.add(egui::DragValue::new(&mut resize.width).range(1..=16384)).changed() && resize.linked {
+                        resize.height=(resize.width as f64*resize.original[1] as f64/resize.original[0].max(1) as f64).round().clamp(1.0,16384.0) as u32;
+                    }
+                    ui.label(lang.text("Высота","Height"));
+                    if ui.add(egui::DragValue::new(&mut resize.height).range(1..=16384)).changed() && resize.linked {
+                        resize.width=(resize.height as f64*resize.original[0] as f64/resize.original[1].max(1) as f64).round().clamp(1.0,16384.0) as u32;
+                    }
+                });
+                ui.checkbox(&mut resize.linked,lang.text("Сохранять пропорции","Maintain aspect ratio"));
+                ui.horizontal(|ui|{for (fraction,label) in [(1.0,"100%"),(0.5,"50%"),(0.25,"25%")] {
+                    if ui.button(label).clicked(){resize.width=(resize.original[0] as f64*fraction).round().max(1.0) as u32;resize.height=(resize.original[1] as f64*fraction).round().max(1.0) as u32;}
+                }});
+                ui.horizontal(|ui|{ui.selectable_value(&mut resize.jpeg,false,"PNG");ui.selectable_value(&mut resize.jpeg,true,"JPEG");});
+                if resize.jpeg {ui.add(egui::Slider::new(&mut resize.quality,10..=100).text(lang.text("Качество","Quality")));}
+                ui.label(lang.text("Сохраняется новый файл. EXIF/ICC и другие метаданные не переносятся; ориентация применяется к пикселям. JPEG: прозрачность заменяется белым. Анимации/RAW: только первый кадр/превью.","Saves a new file. EXIF/ICC and other metadata are not copied; orientation is baked into pixels. JPEG composites transparency on white. Animation/RAW: first frame/preview only."));
+                let valid=crate::platform::resize::Options{width:resize.width,height:resize.height,quality:resize.quality,jpeg:resize.jpeg}.validate().is_ok();
+                if !valid {ui.colored_label(egui::Color32::RED,lang.text("1–16384 px по стороне, не более48 мегапикселей","1–16384 px per side, at most48 megapixels"));}
+                let save=ui.add_enabled(valid&&!self.jobs.busy(),egui::Button::new(lang.text("Сохранить копию…","Save resized copy…"))).clicked();
+                let cancel=ui.button(lang.text("Отмена","Cancel")).clicked();(save,cancel)
+            });
+            if result.inner.0 {
+                let options = crate::platform::resize::Options {
+                    width: resize.width,
+                    height: resize.height,
+                    quality: resize.quality,
+                    jpeg: resize.jpeg,
+                };
+                self.jobs.start(
+                    crate::platform::jobs::Job::Resize(resize.path.clone(), options),
+                    ctx,
+                );
+                self.resize = None;
+            } else if result.inner.1 || result.should_close() {
+                self.resize = None;
+            }
+        }
+        if self.edits.busy() {
+            egui::Area::new(egui::Id::new("photo_edit_busy"))
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -24.0))
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(lang.text("Сохранение поворота…", "Saving transform…"));
+                    });
+                });
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        if let Some(error) = self.edits.error.clone() {
+            let response = egui::Modal::new(egui::Id::new("photo_edit_error")).show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                ui.heading(lang.text("Не удалось изменить фото", "Could not edit photo"));
+                ui.label(error);
+                ui.button(lang.text("Закрыть", "Close")).clicked()
+            });
+            if response.inner || response.should_close() {
+                self.edits.error = None;
+            }
         }
         if let Some(path) = self.delete_path.clone() {
             let response =

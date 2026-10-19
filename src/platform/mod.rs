@@ -5,3 +5,5 @@ pub(crate) mod jobs;
 pub(crate) mod backdrop;
 pub(crate) mod clipboard;
 mod files;
+pub(crate) mod edits;
+pub(crate) mod resize;
