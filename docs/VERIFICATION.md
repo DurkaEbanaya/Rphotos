@@ -62,10 +62,23 @@ clean source provenance `ef06bb0`. Извлечённый binary запущен 
 
 ## Результаты
 
+### Scroll hotfix перед Preview 2
+
+Исправлен рассогласованный anchor: egui применяет wheel/scrollbar delta после
+отрисовки ScrollArea, а gallery сохраняла relative anchor до этой delta. Последующий
+reflow мог вернуть старое смещение. Теперь relative anchor переводится в итоговую
+систему координат ScrollArea, включая drag/clamp/инерцию, без изменения чувствительности.
+Новый regression воспроизводил ошибку до исправления: offset3.8245 при anchor,
+всё ещё соответствующем offset0. Проверяются360 кадров wheel вниз/вверх через
+три месяца, координаты фото/высота контента/маркер и повторный reflow каждые17 кадров.
+Touch regression пересекает границу месяца и проверяет anchor и kinetic tail.
+235 tests passed /12 ignored; clippy — только8 прежних upstream предупреждений.
+Это synthetic input60fps, не утверждение о ручной приёмке настоящего touchscreen.
+
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 234 passed, 0 failed, 12 ignored |
+| `cargo test --locked --all-targets` | 235 passed, 0 failed, 12 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |

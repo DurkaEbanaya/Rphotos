@@ -136,11 +136,13 @@ impl Library {
             }
         }
         let mut opened = keyboard_open;
+        let mut drawn_offset = self.scroll_offset;
         let output = egui::ScrollArea::vertical()
             .id_salt(("photo_grid", self.section, self.album, &self.folder))
             .auto_shrink([false, false])
             .vertical_scroll_offset(self.scroll_offset)
             .show_viewport(ui, |ui, viewport| {
+                drawn_offset = viewport.min.y;
                 ui.set_height(prefix + self.row_offsets.last().copied().unwrap_or(0.0));
                 let base = ui.max_rect().min;
                 if prefix > 0.0 && viewport.min.y < prefix {
@@ -652,7 +654,21 @@ impl Library {
                     }
                 }
             });
+        // egui applies wheel/scrollbar input in ScrollArea::end, after our
+        // virtual rows were drawn. Store the anchor in the *final* coordinate
+        // system too; otherwise the next reflow rewinds one scroll step (most
+        // noticeable when the first visible row changes at a month boundary).
+        if let Some((_, relative)) = &mut self.scroll_anchor {
+            *relative += drawn_offset - output.state.offset.y;
+        }
         self.scroll_offset = output.state.offset.y;
+        #[cfg(test)]
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("library.grid.test_geometry"),
+                (output.content_size, output.inner_rect),
+            )
+        });
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new("library.grid.viewport"), output.inner_rect));
         #[cfg(test)]

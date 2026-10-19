@@ -1948,6 +1948,167 @@ mod tests {
         assert_eq!(month_label("2026-08", Language::En), "August 2026");
     }
 
+    #[test]
+    fn wheel_scroll_crosses_month_boundaries_without_layout_or_position_jump() {
+        use egui_kittest::kittest::Queryable;
+        let (temp, _, database) = fixture();
+        let mut state = store::snapshot(&store::connect(&database).unwrap()).unwrap();
+        state.albums.push(store::Album {
+            id: 1,
+            name: "Recommendations".into(),
+            cover: None,
+            modified: 0,
+            automatic: false,
+        });
+        for (i, photo) in state.photos.iter_mut().enumerate() {
+            photo.modified = chrono::NaiveDate::from_ymd_opt(2026, 10 - i as u32 / 6, 15)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp();
+        }
+        let ctx = egui::Context::default();
+        let mut library = Library::with_paths(&ctx, database, temp.path().join("cache"));
+        library.thumbnails.restore_aspects(
+            &state
+                .photos
+                .iter()
+                .map(|p| {
+                    let name = p.path.file_stem().unwrap().to_string_lossy();
+                    let n = name.rsplit('-').next().unwrap().parse::<usize>().unwrap();
+                    (p.key.clone(), if n % 3 == 0 { 2.0 / 3.0 } else { 1.6 })
+                })
+                .collect(),
+        );
+        library.state = state;
+        library.ready = true;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 500.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_state(
+                |ctx, (lib, settings)| {
+                    lib.thumbnails.poll(ctx);
+                    lib.show(ctx, settings);
+                },
+                (library, AppSettings::default()),
+            );
+        h.run_steps(5);
+        let offsets = h.state().0.row_offsets.clone();
+        let mut previous = h.state().0.scroll_offset;
+        let mut dates = HashSet::new();
+        let mut previous_positions = std::collections::HashMap::<String, f64>::new();
+        let mut previous_marker = None::<f32>;
+        for frame in 0..360 {
+            let down = frame < 180;
+            h.input_mut().events.extend([
+                egui::Event::PointerMoved(egui::pos2(400.0, 300.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, if down { -12.0 } else { 12.0 }),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.run_steps(1);
+            let next = h.state().0.scroll_offset;
+            if let Some((id, relative)) = h.state().0.scroll_anchor {
+                let lib = &h.state().0;
+                let r=lib.rows.iter().position(|r|matches!(r,GridRow::Photos(r) if r.cells.iter().any(|c|lib.state.photos[c.index].id==id))).unwrap();
+                assert!(
+                    (lib.row_offsets[r] + lib.discovery_height() - next - relative).abs() < 0.1,
+                    "anchor lag at offset {next}: row {} relative {relative}",
+                    lib.row_offsets[r]
+                );
+            }
+            assert!(
+                (next - previous).abs() <= 13.0,
+                "scroll jumped {previous} -> {next}"
+            );
+            if frame != 180 {
+                assert!(
+                    if down {
+                        next >= previous
+                    } else {
+                        next <= previous
+                    },
+                    "scroll reversed"
+                );
+            }
+            assert_eq!(h.state().0.row_offsets, offsets);
+            let geometry = h
+                .ctx
+                .data(|d| {
+                    d.get_temp::<(egui::Vec2, egui::Rect)>(egui::Id::new(
+                        "library.grid.test_geometry",
+                    ))
+                })
+                .unwrap();
+            assert!(
+                (geometry.0.y
+                    - h.state().0.row_offsets.last().unwrap()
+                    - h.state().0.discovery_height())
+                .abs()
+                    < 0.1,
+                "wrong content height {geometry:?}"
+            );
+            if let (Some(old), Some(new)) = (previous_marker, h.state().0.timeline_marker) {
+                assert!((new - old).abs() < 13.0, "timeline jumped {old} -> {new}");
+            }
+            previous_marker = h.state().0.timeline_marker;
+            for photo in &h.state().0.state.photos {
+                let name = photo
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                if let Some(node) = h.query_by_label(&name) {
+                    let b = node.raw_bounds().unwrap();
+                    if let Some(old) = previous_positions.insert(name.clone(), b.y0) {
+                        assert!(
+                            (b.y0 - old).abs() <= 13.0,
+                            "photo jumped {name}: {old} -> {}",
+                            b.y0
+                        );
+                    }
+                } else {
+                    previous_positions.remove(&name);
+                }
+            }
+            for key in ["Октябрь 2026", "Сентябрь 2026", "Август 2026"] {
+                if let Some(node) = h.query_by_label(key) {
+                    let b = node.raw_bounds().unwrap();
+                    assert!((b.height() - 30.0).abs() < 0.01);
+                    dates.insert(key);
+                }
+            }
+            previous = next;
+            // A metadata-only layout revision must not rewind the last wheel
+            // step, even when the anchor moved to the next month's first row.
+            if frame % 17 == 0 {
+                let lib = &mut h.state_mut().0;
+                let offset = lib.scroll_offset;
+                lib.thumbnails.revision += 1;
+                lib.rebuild_rows_at(768.0, 256.0);
+                assert!(
+                    (lib.scroll_offset - offset).abs() < 0.1,
+                    "reflow rewound wheel at frame {frame}"
+                );
+            }
+        }
+        assert!(dates.len() >= 2);
+        // Once scrolling rests, a background aspect arrival can reflow rows.
+        // Its anchor must describe the final offset, not the pre-wheel viewport.
+        let lib = &mut h.state_mut().0;
+        let (id, relative) = lib.scroll_anchor.unwrap();
+        let row=lib.rows.iter().position(|r|matches!(r,GridRow::Photos(r) if r.cells.iter().any(|c|lib.state.photos[c.index].id==id))).unwrap();
+        assert!(
+            (lib.row_offsets[row] + lib.discovery_height() - lib.scroll_offset - relative).abs()
+                < 0.1,
+            "anchor is one wheel step behind final scroll offset"
+        );
+    }
+
     /// Real GPU-rendered captures, never personal photos. Run explicitly with
     /// RPHOTOS_CAPTURE_DIR=/tmp/opencode/... cargo test capture_library -- --ignored.
     #[test]
@@ -2797,7 +2958,22 @@ mod tests {
             assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        for (i, photo) in h.state_mut().0.state.photos.iter_mut().enumerate() {
+            photo.modified = chrono::NaiveDate::from_ymd_opt(2026, 10 - i as u32 / 6, 15)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp();
+        }
+        h.state_mut().0.layout_key = None;
         h.run_steps(4);
+        // Start shortly before a month boundary; the drag and inertial tail
+        // must keep the same final-coordinate anchor through that boundary.
+        let boundary = h.state().0.months[1].offset;
+        h.state_mut().0.scroll_offset = (boundary - 100.0).max(0.0);
+        h.state_mut().0.scroll_anchor = None;
+        h.run_steps(2);
         let touch = |phase, pos| egui::Event::Touch {
             device_id: egui::TouchDeviceId(1),
             id: egui::TouchId(1),
@@ -2824,9 +3000,23 @@ mod tests {
                 egui::Event::PointerMoved(pos),
             ]);
             h.run_steps(1);
+            let lib = &h.state().0;
+            if let Some((id, relative)) = lib.scroll_anchor {
+                let r=lib.rows.iter().position(|r|matches!(r,GridRow::Photos(r) if r.cells.iter().any(|c|lib.state.photos[c.index].id==id))).unwrap();
+                assert!(
+                    (lib.row_offsets[r] + lib.discovery_height() - lib.scroll_offset - relative)
+                        .abs()
+                        < 0.1,
+                    "touch anchor lag at month boundary"
+                );
+            }
         }
         let dragged = h.state().0.scroll_offset;
         assert!(dragged > 100.0, "vertical touch did not scroll: {dragged}");
+        assert!(
+            dragged > boundary,
+            "touch must actually cross a month boundary"
+        );
         let end = egui::pos2(320.0, 410.0);
         h.input_mut().events.extend([
             touch(egui::TouchPhase::End, end),
