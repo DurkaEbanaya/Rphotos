@@ -48,6 +48,29 @@ fn native_crop_retains_source_pixels_and_discards_old_viewports() {
     assert_eq!(ready.tiles[0].1.size, [200, 4]);
     assert_eq!(ready.tiles[0].1.pixels[0], egui::Color32::RED);
     assert_eq!(ready.tiles[0].1.pixels[1], egui::Color32::BLACK);
+    // After a later viewport request only that request may become the current
+    // result. The worker retains full pixels, not the downscaled fit texture.
+    let next = Request {
+        path: path.clone(),
+        rect: [1, 0, 4100, 4],
+    };
+    detail.input.send(next.clone()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let latest = loop {
+        if let Some(ready) = detail.output.lock().unwrap().take() {
+            if ready.request == next {
+                break ready;
+            }
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(latest.tiles.len(), 3);
+    assert!(latest
+        .tiles
+        .iter()
+        .all(|(_, pixels)| pixels.size[0] <= 2048 && pixels.size[1] <= 2048));
+    assert_eq!(latest.tiles[0].1.pixels[0], egui::Color32::BLACK);
     assert_eq!(image::image_dimensions(path).unwrap(), (9000, 4));
 }
 impl Detail {

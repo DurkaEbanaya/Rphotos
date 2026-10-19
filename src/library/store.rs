@@ -1251,6 +1251,30 @@ fn album_lifecycle_migrates_preserves_originals_and_rolls_back() {
     drop(old);
     let mut db = connect(&path).unwrap();
     assert_eq!(snapshot(&db).unwrap().albums[0].name, "Legacy");
+    let backup_path = path.with_extension("before-v1.sqlite3");
+    let backup =
+        Connection::open_with_flags(&backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    assert_eq!(
+        backup
+            .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        backup
+            .query_row("SELECT name FROM albums WHERE id=1", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "Legacy"
+    );
+    assert_eq!(
+        backup
+            .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    drop(backup);
     let original = temp.path().join("original.jpg");
     std::fs::write(&original, b"untouched").unwrap();
     db.execute(

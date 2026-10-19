@@ -36,6 +36,16 @@ GPU captures: `/tmp/opencode/rphotos-audit-captures`, библиотека/Revea
 процессы закрыты. Реальные clipboard/print/share не вызывались.
 Новые Win/Mac adapters ещё требуют remote compilation/native acceptance.
 
+Последний локальный повтор:234 passed /12 ignored, clippy только8 прежних upstream
+warnings; все4 opt-in GPU capture tests прошли в
+`/tmp/opencode/rphotos-audit-final-captures`. ICC test использует PNG с embedded
+linear RGB:64 действительно преобразуется в~137 sRGB при неизменном alpha/source.
+Native detail regression проверяет новую область после предыдущей и разбиение4100px
+на три текстуры не более2048px без downscale.
+Opt-dev archive проверен независимо:23 relative entries, SHA256 архива/binary,
+clean source provenance `ef06bb0`. Извлечённый binary запущен в обеих сценах по5с
+в isolated XDG: `/tmp/opencode/rphotos-audit-archive-smoke-wwcvb8w8`, процессы закрыты.
+
 ## Результаты
 
 | Проверка | Результат |
