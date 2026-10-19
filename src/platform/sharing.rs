@@ -129,9 +129,9 @@ mod native {
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
-    use objc2::{rc::Retained, runtime::AnyObject, ClassType};
+    use objc2::{rc::Retained, ClassType};
     use objc2_app_kit::{NSSharingServicePicker, NSView};
-    use objc2_foundation::{NSArray, NSRectEdge, NSString, NSURL};
+    use objc2_foundation::{NSArray, NSObject, NSRectEdge, NSString, NSURL};
     thread_local! {static PICKER:std::cell::RefCell<Option<Retained<NSSharingServicePicker>>>=const{std::cell::RefCell::new(None)};}
     pub fn show(address: usize, paths: &[PathBuf]) -> anyhow::Result<()> {
         // Called by egui on the application main thread, with the live NSView.
@@ -141,9 +141,11 @@ mod native {
                 .iter()
                 .map(|p| NSURL::fileURLWithPath(&NSString::from_str(&p.to_string_lossy())))
                 .collect();
-            let refs: Vec<&AnyObject> = urls
+            let refs: Vec<&NSObject> = urls
                 .iter()
-                .map(|u| &*(u.as_ref() as *const NSURL as *const AnyObject))
+                // NSURL is an NSObject subclass; use the concrete retainable
+                // superclass, not AnyObject (which is not IsRetainable in0.5).
+                .map(|u| &*(u.as_ref() as *const NSURL as *const NSObject))
                 .collect();
             let items = NSArray::from_slice(&refs);
             let picker = NSSharingServicePicker::initWithItems(

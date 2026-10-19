@@ -242,7 +242,7 @@ pub(crate) fn print(paths: &[std::path::PathBuf]) -> Result<()> {
     let script = r#"param([string]$Manifest)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,ReachFramework,System.Printing
-$paths=Get-Content -Raw -LiteralPath $Manifest | ConvertFrom-Json
+$paths=Get-Content -Raw -Encoding UTF8 -LiteralPath $Manifest | ConvertFrom-Json
 $dialog=New-Object System.Windows.Controls.PrintDialog
 if ($dialog.ShowDialog() -ne $true) { exit 0 }
 $document=New-Object System.Windows.Documents.FixedDocument

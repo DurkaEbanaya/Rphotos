@@ -28,11 +28,13 @@
 
 ## Проверка
 
-Локально Linux:233 tests passed /12 ignored; clippy только8 прежних upstream
+Локально Linux:234 tests passed /12 ignored; clippy только8 прежних upstream
 warnings. Native sensor path проверен оригинальным сгенерированным Bayer DNG64×64
 через установленный LibRaw, без JPEG. Нельзя считать это проверкой всех камер.
 Тесты edits/recovery используют только synthetic files и отдельную temporary recovery
 directory; личные оригиналы/clipboard/printer не изменяются.
+ICC проверен не только identity-transform: сгенерированный PNG с линейным RGB
+профилем действительно меняет64→около137 sRGB, сохраняет alpha и байты оригинала.
 
 Новые зависимости: xattr, LittleCMS2 (static), window-vibrancy; LibRaw динамический,
 его установка/лицензия относится к пользователю системы. Monitor color management,

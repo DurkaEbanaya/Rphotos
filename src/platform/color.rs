@@ -63,3 +63,58 @@ fn srgb_round_trip_preserves_alpha_and_invalid_profiles_fail() {
     assert!(to_srgb(&mut image, b"invalid profile").is_err());
     assert_eq!(image, before);
 }
+
+#[cfg(test)]
+#[test]
+fn embedded_linear_rgb_profile_changes_decoded_pixels_without_changing_source() {
+    use image::ImageEncoder;
+    let curve = lcms2::ToneCurve::new(1.0);
+    let profile = lcms2::Profile::new_rgb(
+        &lcms2::CIExyY {
+            x: 0.3127,
+            y: 0.3290,
+            Y: 1.0,
+        },
+        &lcms2::CIExyYTRIPLE {
+            Red: lcms2::CIExyY {
+                x: 0.64,
+                y: 0.33,
+                Y: 1.0,
+            },
+            Green: lcms2::CIExyY {
+                x: 0.30,
+                y: 0.60,
+                Y: 1.0,
+            },
+            Blue: lcms2::CIExyY {
+                x: 0.15,
+                y: 0.06,
+                Y: 1.0,
+            },
+        },
+        &[&curve, &curve, &curve],
+    )
+    .unwrap()
+    .icc()
+    .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("linear-rgb.png");
+    let mut encoded = Vec::new();
+    let mut encoder = image::codecs::png::PngEncoder::new(&mut encoded);
+    encoder.set_icc_profile(profile).unwrap();
+    encoder
+        .write_image(&[64, 64, 64, 83], 1, 1, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    std::fs::write(&path, &encoded).unwrap();
+    let loaded = crate::file_io::load_image(&path)
+        .image
+        .unwrap()
+        .into_rgba8();
+    let p = loaded.get_pixel(0, 0).0;
+    assert!(
+        (130..=145).contains(&p[0]),
+        "linear quarter-light must become approximately sRGB137, not64: {p:?}"
+    );
+    assert_eq!(p[3], 83);
+    assert_eq!(std::fs::read(path).unwrap(), encoded);
+}

@@ -1,5 +1,5 @@
 //! On-demand native-pixel viewport over the fit texture. Decode/crop off UI;
-//! never upload a texture larger than4096. Only one original is retained.
+//! never upload a texture larger than2048. Only one original is retained.
 use eframe::egui;
 use std::{path::PathBuf, sync::mpsc};
 #[derive(Clone, PartialEq)]

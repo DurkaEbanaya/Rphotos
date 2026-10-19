@@ -393,8 +393,11 @@ pub(super) fn replace(path: &Path, before: &[u8], after: &[u8]) -> Result<()> {
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
-        let replacement = staged
-            .path()
+        // ReplaceFile needs delete access to the replacement. NamedTempFile's
+        // open handle does not share deletion on Windows: retain its TempPath
+        // cleanup guard but close the File before calling the native operation.
+        let staged_path = staged.into_temp_path();
+        let replacement = staged_path
             .as_os_str()
             .encode_wide()
             .chain(Some(0))

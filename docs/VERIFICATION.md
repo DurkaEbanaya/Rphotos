@@ -1,5 +1,10 @@
 # Проверка Rphotos — 2026-10-19
 
+Audit CI47ec70b: Linux полностью прошёл; Windows выявил открытый временный handle,
+блокирующий ReplaceFile (os error32), macOS — неретейнимый AnyObject в Share array.
+Исправление закрывает File, сохраняя TempPath guard, и использует NSObject superclass.
+Тесты не отключались; результат повторного native CI фиксируется после завершения.
+
 Проверено локально на Linux / KDE Wayland, Rust 1.98.1.
 Это запись фактически выполненных проверок, не матрица обещанной поддержки.
 
@@ -36,7 +41,7 @@ GPU captures: `/tmp/opencode/rphotos-audit-captures`, библиотека/Revea
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 233 passed, 0 failed, 12 ignored |
+| `cargo test --locked --all-targets` | 234 passed, 0 failed, 12 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |
