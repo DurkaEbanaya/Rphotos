@@ -1332,6 +1332,32 @@ mod tests {
         assert_eq!(refresh.height(), 32.0);
         assert!((refresh.width() - 160.0).abs() < 2.0, "{refresh:?}");
         assert_eq!(settings.y0 - refresh.y0, 64.0);
+        let preload = h
+            .get_by_label("Прогрузить все миниатюры")
+            .raw_bounds()
+            .unwrap();
+        let x = (settings.x0 + settings.x1) as f32 / 2.0;
+        for y in [
+            settings.y1 as f32 + 0.5,
+            ((settings.y1 + preload.y0) / 2.0) as f32,
+            preload.y0 as f32 - 0.5,
+        ] {
+            h.input_mut()
+                .events
+                .push(egui::Event::PointerMoved(egui::pos2(x, y)));
+            h.run_steps(2);
+            assert!(!h.output().shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Mesh(mesh) if mesh.vertices.len()==42)),"flyout separator: settings={settings:?} preload={preload:?} pointer=({x},{y}) meshes={:?}",h.output().shapes.iter().filter_map(|s|matches!(&s.shape,egui::Shape::Mesh(m) if m.vertices.len()==42).then_some(s.clip_rect)).collect::<Vec<_>>());
+        }
+        for bounds in [settings, preload] {
+            h.input_mut()
+                .events
+                .push(egui::Event::PointerMoved(egui::pos2(
+                    (bounds.x0 + bounds.x1) as f32 / 2.0,
+                    (bounds.y0 + bounds.y1) as f32 / 2.0,
+                )));
+            h.run_steps(2);
+            assert_eq!(h.output().shapes.iter().filter(|shape|matches!(&shape.shape,egui::Shape::Mesh(mesh) if mesh.vertices.len()==42)).count(),1,"only one hovered menu action may glow");
+        }
         let favorite = h.get_by_label("Избранное").raw_bounds().unwrap();
         assert!(
             favorite.y0 < 128.0,
@@ -1639,6 +1665,61 @@ mod tests {
         );
         let tabs = h.get_by_label("Коллекция").raw_bounds().unwrap();
         assert_eq!((tabs.x0, tabs.y0, tabs.height()), (16.0, 80.0, 48.0));
+        // The actual shell's padded hit targets must not shift Reveal away
+        // from their centered titles, in either direction.
+        for label in ["Коллекция", "Альбомы", "Папки", "Избранное"] {
+            let bounds = h.get_by_label(label).raw_bounds().unwrap();
+            h.input_mut()
+                .events
+                .push(egui::Event::PointerMoved(egui::pos2(
+                    (bounds.x0 + bounds.x1) as f32 / 2.0,
+                    (bounds.y0 + bounds.y1) as f32 / 2.0,
+                )));
+            h.run_steps(2);
+            let text = h
+                .output()
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let glow=h.output().shapes.iter().find(|shape|matches!(&shape.shape,egui::Shape::Mesh(mesh) if mesh.vertices.len()==42)).unwrap();
+            assert!(
+                glow.clip_rect.center().distance(text.center()) < 0.01,
+                "{label}: Reveal must be centered on the title"
+            );
+            assert!(glow.clip_rect.left() < text.left() && glow.clip_rect.right() > text.right());
+        }
+        for point in [
+            search.center(),
+            egui::pos2(1450.0, h.state().0.timeline_marker.unwrap()),
+        ] {
+            h.input_mut().events.push(egui::Event::PointerMoved(point));
+            h.run_steps(2);
+            assert!(!h.output().shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Mesh(mesh) if mesh.vertices.len()==42)),"search and active date must not have Reveal artifacts");
+        }
+        h.state_mut().0.settings_open = true;
+        h.run_steps(2);
+        let bounds = h.get_by_label("Источники").raw_bounds().unwrap();
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(
+                (bounds.x0 + bounds.x1) as f32 / 2.0,
+                (bounds.y0 + bounds.y1) as f32 / 2.0,
+            )));
+        h.run_steps(2);
+        assert!(
+            !h.output().shapes.iter().any(
+                |shape| matches!(&shape.shape,egui::Shape::Mesh(mesh) if mesh.vertices.len()==42)
+            ),
+            "settings category heading is informational"
+        );
+        h.state_mut().0.settings_open = false;
+        h.run_steps(2);
         let first_photo = h.get_by_label("Фото-00.png").raw_bounds().unwrap();
         assert_eq!(
             first_photo.x0, 16.0,
@@ -1788,6 +1869,33 @@ mod tests {
         assert!(h.query_by_label("Назад к фотографиям").is_some());
         assert!(h.query_by_label("Фото-00.png").is_none());
         assert!(h.get_by_label("Выбрать").is_disabled());
+        let month = h.get_by_label("Октябрь 2026").raw_bounds().unwrap();
+        h.input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(
+                1200.0,
+                (month.y0 + month.y1) as f32 / 2.0,
+            )));
+        h.run_steps(2);
+        assert!(
+            !h.output().shapes.iter().any(
+                |shape| matches!(&shape.shape,egui::Shape::Mesh(mesh) if mesh.vertices.len()==42)
+            ),
+            "blank right side of month row must not glow"
+        );
+        assert!(
+            !h.get_by_label("…").is_disabled(),
+            "overflow must work in month chooser"
+        );
+        h.get_by_label("…").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Настройки").is_some());
+        h.press_key(egui::Key::Escape);
+        h.run_steps(2);
+        assert!(
+            h.state().0.semantic_zoom,
+            "Escape closes overflow before month chooser"
+        );
         h.get_by_label("Август 2026").click();
         h.run_steps(3);
         assert!(!h.state().0.semantic_zoom);
@@ -2023,6 +2131,76 @@ mod tests {
                 Language::Ru,
                 Appearance::Light,
             ),
+            (
+                "collection-reveal",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "preferences-reveal",
+                [1100.0, 900.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "collection-tabs-reveal",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "collection-search-reveal",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "collection-date-reveal",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "preferences-heading-reveal",
+                [1100.0, 900.0],
+                1.0,
+                Language::Ru,
+                Appearance::Light,
+            ),
+            (
+                "month-blank-reveal",
+                [900.0, 760.0],
+                1.0,
+                Language::Ru,
+                Appearance::Dark,
+            ),
+            (
+                "month-menu-reveal",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Dark,
+            ),
+            (
+                "menu-separator-reveal",
+                [1500.0, 960.0],
+                1.0,
+                Language::Ru,
+                Appearance::Dark,
+            ),
+            (
+                "preferences-radio-reveal",
+                [1100.0, 900.0],
+                1.0,
+                Language::Ru,
+                Appearance::Dark,
+            ),
         ] {
             let ctx = egui::Context::default();
             let library = Library::with_paths(&ctx, database.clone(), temp.path().join("cache"));
@@ -2080,7 +2258,10 @@ mod tests {
                     lib.section = Section::Folders;
                     lib.folder = Some(folder);
                 }
-                "preferences" => harness.state_mut().0.settings_open = true,
+                "preferences"
+                | "preferences-reveal"
+                | "preferences-heading-reveal"
+                | "preferences-radio-reveal" => harness.state_mut().0.settings_open = true,
                 "collection-search" => harness.state_mut().0.discovery.search_open = true,
                 "collection-semantic" => {
                     let lib = &mut harness.state_mut().0;
@@ -2120,7 +2301,13 @@ mod tests {
             if name == "collection-large" {
                 harness.state_mut().1.thumbnail_density = 0;
             }
-            if name == "collection-small-months" || name == "collection-month-chooser" {
+            if matches!(
+                name,
+                "collection-small-months"
+                    | "collection-month-chooser"
+                    | "month-blank-reveal"
+                    | "month-menu-reveal"
+            ) {
                 for (i, p) in harness.state_mut().0.state.photos.iter_mut().enumerate() {
                     p.modified = chrono::NaiveDate::from_ymd_opt(2026, 10 - i as u32 / 6, 15)
                         .unwrap()
@@ -2131,7 +2318,7 @@ mod tests {
                 }
                 harness.state_mut().0.layout_key = None;
                 harness.state_mut().1.thumbnail_density = 2;
-                harness.state_mut().0.semantic_zoom = name == "collection-month-chooser";
+                harness.state_mut().0.semantic_zoom = name != "collection-small-months";
             }
             harness.run_steps(4);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -2162,7 +2349,10 @@ mod tests {
                 }
                 assert_eq!(harness.state().0.pager.adjacent, Some(1));
             }
-            if name == "collection-menu" {
+            if matches!(
+                name,
+                "collection-menu" | "month-menu-reveal" | "menu-separator-reveal"
+            ) {
                 use egui_kittest::kittest::Queryable;
                 harness.get_by_label("…").click();
                 harness.run_steps(3);
@@ -2207,6 +2397,90 @@ mod tests {
                         rect.y0 as f32 + 20.0,
                     )));
                 harness.run_steps(3);
+            }
+            if name == "collection-reveal" || name == "preferences-reveal" {
+                use egui_kittest::kittest::Queryable;
+                let label = if name == "collection-reveal" {
+                    "Фото-00.png"
+                } else {
+                    "Добавить папку"
+                };
+                let rect = harness.get_by_label(label).raw_bounds().unwrap();
+                harness
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(egui::pos2(
+                        rect.x0 as f32 + 20.0,
+                        rect.y0 as f32 + 20.0,
+                    )));
+                harness.run_steps(3);
+            }
+            if matches!(
+                name,
+                "collection-tabs-reveal"
+                    | "collection-search-reveal"
+                    | "preferences-heading-reveal"
+                    | "collection-date-reveal"
+            ) {
+                use egui_kittest::kittest::Queryable;
+                let label = match name {
+                    "collection-tabs-reveal" => "Альбомы",
+                    "collection-search-reveal" => "Поиск по имени или пути",
+                    "preferences-heading-reveal" => "Источники",
+                    _ => "Текущая дата: Октябрь 2026",
+                };
+                let rect = harness.get_by_label(label).raw_bounds().unwrap();
+                harness
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(egui::pos2(
+                        (rect.x0 + rect.x1) as f32 / 2.0,
+                        (rect.y0 + rect.y1) as f32 / 2.0,
+                    )));
+                harness.run_steps(3);
+            }
+            if name == "month-blank-reveal" {
+                use egui_kittest::kittest::Queryable;
+                let r = harness.get_by_label("Октябрь 2026").raw_bounds().unwrap();
+                harness
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(egui::pos2(
+                        740.0,
+                        (r.y0 + r.y1) as f32 / 2.0,
+                    )));
+                harness.run_steps(2);
+            }
+            if name == "menu-separator-reveal" {
+                use egui_kittest::kittest::Queryable;
+                let a = harness.get_by_label("Настройки").raw_bounds().unwrap();
+                let b = harness
+                    .get_by_label("Прогрузить все миниатюры")
+                    .raw_bounds()
+                    .unwrap();
+                harness
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(egui::pos2(
+                        (a.x0 + a.x1) as f32 / 2.0,
+                        (a.y1 + b.y0) as f32 / 2.0,
+                    )));
+                harness.run_steps(2);
+            }
+            if name == "preferences-radio-reveal" {
+                use egui_kittest::kittest::Queryable;
+                let r = harness
+                    .get_by_label("Следующее / предыдущее изображение")
+                    .raw_bounds()
+                    .unwrap();
+                harness
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(egui::pos2(
+                        r.x0 as f32 + 6.0,
+                        (r.y0 + r.y1) as f32 / 2.0,
+                    )));
+                harness.run_steps(2);
             }
             let image = harness.render().expect("offscreen render failed");
             image.save(output.join(format!("{name}.png"))).unwrap();

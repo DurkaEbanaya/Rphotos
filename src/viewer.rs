@@ -694,8 +694,8 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, size: egui::Vec2) -> 
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     let painter = ui.painter_at(rect);
-    if response.hovered() || response.has_focus() {
-        painter.rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    if response.is_pointer_button_down_on() {
+        painter.rect_filled(rect, 0.0, crate::reveal::ACCENT);
     }
     let center = rect.center();
     let stroke = egui::Stroke::new(1.0_f32, ui.visuals().text_color());

@@ -286,9 +286,8 @@ fn task_row(
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
         });
-        if response.hovered() || response.has_focus() {
-            ui.painter()
-                .rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        if response.is_pointer_button_down_on() {
+            ui.painter().rect_filled(rect, 0.0, crate::reveal::ACCENT);
         }
         let c = rect.center();
         let s = Stroke::new(1.0_f32, t.text);

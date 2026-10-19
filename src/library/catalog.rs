@@ -862,21 +862,13 @@ fn text(ui: &egui::Ui, pos: egui::Pos2, value: &str, size: f32, color: Color32, 
     );
 }
 fn new_tile(ui: &mut egui::Ui, rect: Rect, title: &str, subtitle: &str, t: &Tokens) -> bool {
-    ui.painter().rect_filled(rect, 0.0, t.accent);
-    text(
-        ui,
-        rect.min + vec2(16.0, 32.0),
-        title,
-        20.0,
-        Color32::WHITE,
-        rect,
-    );
+    text(ui, rect.min + vec2(16.0, 32.0), title, 20.0, t.text, rect);
     text(
         ui,
         rect.min + vec2(16.0, 74.0),
         subtitle,
         14.0,
-        Color32::WHITE,
+        t.text,
         rect,
     );
     let response = ui.interact(rect, ui.id().with(title), Sense::click());

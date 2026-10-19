@@ -782,7 +782,7 @@ impl App {
 impl eframe::App for App {
     fn clear_color(&self,_:&egui::Visuals)->[f32;4]{[0.0;4]}
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        self.backdrop.update(ctx,self.library_visible);
+        self.backdrop.update(ctx,self.library_visible,self.library.settings_visible());
         // Synchronize with the GPU before building the next frame.
         // Without this, wgpu's multi-stage pipeline (staging buffer → copy →
         // submit → present) can finish at variable times, causing irregular
@@ -861,6 +861,10 @@ impl eframe::App for App {
             }
             if let Some(paths)=self.library.take_trash(){self.trash_or_confirm(paths,ctx);}
             if self.settings_return_to_viewer && !self.library.settings_visible(){self.settings_return_to_viewer=false;self.library_visible=false;ctx.request_repaint();}
+            // Scene changes can happen during UI construction. Update before
+            // this surface is committed, rather than leaving an unblurred strip
+            // until another input event produces the next frame.
+            self.backdrop.update(ctx,self.library_visible,self.library.settings_visible());
             self.show_permanent_delete_modal(ctx);
             self.paint_toast(ctx);
             return;
@@ -893,6 +897,7 @@ impl eframe::App for App {
                 crate::viewer::Action::None => {}
             }
             self.library.viewer_dialogs(ctx, &mut self.settings);
+            self.backdrop.update(ctx,self.library_visible,self.library.settings_visible());
             self.paint_toast(ctx);
             self.show_permanent_delete_modal(ctx);
             return;

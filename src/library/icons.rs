@@ -177,6 +177,9 @@ pub(super) fn overflow(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), add);
                 });
         });
+    // The Area's outer click-and-drag response is a popup container, not
+    // another action behind its rows/separators.
+    crate::reveal::ignore(&area.response);
     if ui.input(|i| {
         i.key_pressed(egui::Key::Escape)
             || i.key_pressed(egui::Key::Enter)
@@ -193,12 +196,12 @@ pub(super) fn menu_item(ui: &mut egui::Ui, label: &str, icon: Icon) -> egui::Res
         vec2(ui.available_width().max(160.0), 32.0),
         egui::Sense::click(),
     );
+    crate::reveal::bounds(&response, r);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
-    if response.hovered() || response.has_focus() {
-        ui.painter()
-            .rect_filled(r, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    if response.is_pointer_button_down_on() {
+        ui.painter().rect_filled(r, 0.0, crate::reveal::ACCENT);
     }
     let color = ui.visuals().text_color();
     paint(

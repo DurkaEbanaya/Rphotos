@@ -20,9 +20,8 @@ fn command(ui: &mut egui::Ui, label: &str, icon: Icon, width: f32, text: bool) -
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
-    if response.hovered() || response.has_focus() {
-        ui.painter()
-            .rect_filled(r, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    if response.is_pointer_button_down_on() {
+        ui.painter().rect_filled(r, 0.0, crate::reveal::ACCENT);
     }
     let c = pos2(
         r.left() + if text { 20.0 } else { width / 2.0 },
@@ -194,7 +193,7 @@ impl Library {
                 t.header
             }))
             .show(ctx, |ui| {
-                if blocked || self.semantic_zoom {
+                if blocked {
                     ui.disable();
                 }
                 let r = ui.max_rect();
@@ -392,6 +391,7 @@ impl Library {
                     let search =
                         Rect::from_min_size(pos2(margin, r.top() + 6.0), vec2(search_width, 36.0));
                     at(ui, search, |ui| {
+                        if self.semantic_zoom { ui.disable(); }
                         let response = ui.add_sized(
                             search.size(),
                             egui::TextEdit::singleline(&mut self.query)
@@ -408,6 +408,7 @@ impl Library {
                                 lang.text("Поиск по имени или пути", "Search filename or path"),
                             )
                         });
+                        crate::reveal::exclude(ui.ctx(), search);
                         if response.changed() {
                             self.content_search.hits = None;
                             self.layout_key = None;
@@ -433,31 +434,31 @@ impl Library {
                     });
                     at(ui, right, |ui| {
                         if !narrow
-                            && command(
+                            && ui.add_enabled_ui(!self.semantic_zoom, |ui| command(
                                 ui,
                                 lang.text("Новый альбом", "New album"),
                                 Icon::Plus,
                                 120.0,
                                 true,
-                            )
+                            )).inner
                             .clicked()
                         {
                             self.start_picker(None);
                         }
-                        if command(ui, lang.text("Выбрать", "Select"), Icon::Select, 96.0, true)
+                        if ui.add_enabled_ui(!self.semantic_zoom, |ui| command(ui, lang.text("Выбрать", "Select"), Icon::Select, 96.0, true)).inner
                             .clicked()
                         {
                             self.selecting = true;
                             self.selection.clear();
                         }
                         if !narrow
-                            && command(
+                            && ui.add_enabled_ui(!self.semantic_zoom, |ui| command(
                                 ui,
                                 lang.text("Добавить папку", "Add folder"),
                                 Icon::Plus,
                                 144.0,
                                 true,
-                            )
+                            )).inner
                             .clicked()
                         {
                             self.pick_source(ctx);
@@ -612,14 +613,24 @@ impl Library {
                                                 )
                                             });
                                             let text_pos = pos2(
-                                                rect.left(),
+                                                rect.left() + 12.0,
                                                 rect.center().y - galley.size().y / 2.0,
+                                            );
+                                            // Keep the existing generously sized hit target,
+                                            // but balance Reveal padding around the text.
+                                            crate::reveal::bounds(
+                                                &response,
+                                                Rect::from_center_size(
+                                                    rect.center(),
+                                                    vec2(galley.size().x + 16.0, 40.0),
+                                                ),
                                             );
                                             let text_width = galley.size().x;
                                             ui.painter().galley(text_pos, galley, t.text);
                                             if self.section == section {
                                                 ui.painter().hline(
-                                                    rect.left()..=rect.left() + text_width,
+                                                    (rect.left() + 12.0)
+                                                        ..=(rect.left() + 12.0 + text_width),
                                                     rect.bottom() - 3.0,
                                                     Stroke::new(2.0_f32, t.accent),
                                                 );

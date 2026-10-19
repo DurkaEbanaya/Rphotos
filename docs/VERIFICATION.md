@@ -8,7 +8,7 @@
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 208 passed, 0 failed, 11 ignored |
+| `cargo test --locked --all-targets` | 218 passed, 0 failed, 12 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |
@@ -28,6 +28,66 @@
 отсутствии CJK-шрифта; кириллица на GPU-снимках отображается корректно.
 
 ## Что покрывают новые тесты
+
+Общий Reveal: прозрачный idle/hover/focus фон всех обычных controls, accent при
+pointer-down. Радио/checkbox/input сохраняют слабый контур, selection/favorites —
+свои устойчивые отметки. Hover — radial mesh и локальный световой border, focus —
+двойной accent/white outline. End-pass hook использует egui hit testing и enabled,
+не добавляет hit targets и обрабатывает максимум16 ответов, не весь индекс.
+Большие scroll/drag surfaces исключены; focused virtual photo получает тот же
+контур из gallery. Disabled controls не подсвечиваются. Standard button/checkbox,
+custom photo tile, actual press/release, Tab/Enter, no-solid-fill focus и clipping
+проверены через kittest/paint tests. Это собственная Fluent-inspired реализация,
+не WinUI/DWM API и не pixel-perfect приёмка Windows Reveal.
+Свежие synthetic GPU captures: `/tmp/opencode/rphotos-reveal-verified-captures`,
+включая collection/settings hover и отдельные light/dark/pressed/keyboard-focus
+состояния. Все4 capture-теста выполнены отдельно. Native dialogs ОС не меняются
+этим painter; подсветка относится к собственным controls Rphotos.
+Debug/opt-dev builds успешны; library/viewer native startup по5с с isolated XDG
+прошли (`/tmp/opencode/rphotos-reveal-smoke-qxj5_ftc`), процессы закрыты тестом.
+Регрессия повторной установки проверяет ровно один glow mesh на target: callbacks
+не накапливаются при каждом Tokens.apply.
+
+Reveal refinement: информационные labels не получают text-selection click sense;
+drag-only поверхности не считаются кнопками. Активная дата и search explicitly
+исключены (caret/selection остаются нативными egui). Tabs имеют симметричные12px
+отступы текста и центрированные visual bounds, не меняя hit targets. Border теперь
+continuous triangle strips вместо отдельных AA segments с точками на стыках.
+Tests проверяют отсутствие mesh у heading/date/search, focus search, centering и
+сохранение hit bounds. Свежие actual GPU screenshots четырёх reported состояний:
+`/tmp/opencode/rphotos-reveal-refined-captures`, просмотрены после рендера.
+
+Дополнительные reported cases: month chooser Reveal ограничен текстом названия,
+вся строка остаётся нажимаемой, но пустая область справа без эффекта. «…» активен
+в chooser, search/select и другие недоступные команды по-прежнему отключены.
+Popup Area response явно исключён: separator между Settings/Cache all не получает
+glow и соседние rows не подсвечиваются одновременно из-за egui hover hit-slop.
+Radio visual bounds расширены на3px, hover expansion0: circle stroke и полная
+надпись помещаются. Regression проверяет реальные chooser/menu transitions,
+separator ±0.5px, один glow на row и полный circle/label clip.
+Четыре targeted GPU-снимка после исправления просмотрены:
+`/tmp/opencode/rphotos-reveal-four-fixes-captures` — month-blank-reveal,
+month-menu-reveal, menu-separator-reveal, preferences-radio-reveal.
+Debug/opt-dev builds и clippy прошли (только8 прежних upstream warnings).
+Native library smoke5с в isolated XDG прошёл, процесс закрыт:
+`/tmp/opencode/rphotos-reveal-four-fixes-smoke-zimjsrvw`.
+
+Settings Back: прозрачная подложка в idle/hover/release и заблокированном состоянии,
+синий фон только при удержании кнопки; цвет стрелки и48×32 сохранены. Остальные Back
+теперь также без постоянной подложки. Paint regression сохраняет pointer semantics.
+
+Settings backdrop: прозрачность и blur теперь заканчиваются на80px, как в библиотеке.
+Предыдущая попытка расширить blur до96px убрала резкую полосу, но ошибочно увеличила
+acrylic область; нижние16px heading теперь непрозрачны, layout64px не изменён.
+Paint regression проверяет alpha255 в полосе80..96, включая оба боковых отступа,
+light/dark и focus/unfocus; никакой полупрозрачной заливки ниже80px.
+Другие регрессии: переход settings→library/viewer в том же кадре, application zoom
+против native DPI и пустая blur region в fullscreen. Painted-frame marker сохраняет
+80px на кадре Escape/Back, даже когда состояние уже переключилось.
+Это geometry/protocol-input tests, не визуальная приёмка compositor blur.
+Debug/opt-dev builds и isolated native startup5с прошли; EXT background-effect
+подключился (`/tmp/opencode/rphotos-settings-blur-smoke-ce0gs3_p`). Цветной backdrop
+не снимался, чужие окна не захватывались.
 
 Поворот/отражение: все8 EXIF orientations ×4 transforms совпадают с преобразованием
 уже отображаемых pixels; little/big-endian EXIF и сохранность прежних TIFF offsets.

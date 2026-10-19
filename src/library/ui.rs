@@ -67,6 +67,7 @@ impl Tokens {
     }
 
     pub(crate) fn apply(&self, ctx: &egui::Context) {
+        crate::reveal::install(ctx);
         let mut style = (*ctx.style()).clone();
         style.visuals = if self.dark {
             egui::Visuals::dark()
@@ -78,9 +79,31 @@ impl Tokens {
         style.visuals.selection.bg_fill = self.accent;
         style.visuals.selection.stroke.color = Color32::WHITE;
         style.visuals.hyperlink_color = self.accent;
+        // Informational labels are not actions. Their text-selection drag
+        // response must not turn headings into clickable Reveal targets.
+        style.interaction.selectable_labels = false;
         style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
         style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
         style.visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
+        // Radio/checkbox outlines must fit their bounds even while hovered.
+        style.visuals.widgets.inactive.expansion = 0.0;
+        style.visuals.widgets.hovered.expansion = 0.0;
+        style.visuals.widgets.active.expansion = 0.0;
+        for widget in [
+            &mut style.visuals.widgets.inactive,
+            &mut style.visuals.widgets.hovered,
+        ] {
+            widget.bg_fill = Color32::TRANSPARENT;
+            widget.weak_bg_fill = Color32::TRANSPARENT;
+            // Preserve discoverable radio/checkbox/input outlines; transparent
+            // backgrounds must not make an unchecked setting disappear.
+            widget.bg_stroke = egui::Stroke::new(1.0_f32, self.muted.gamma_multiply(0.25));
+        }
+        // egui also uses `active` for keyboard focus. Presses are painted by
+        // Reveal explicitly, so focus must not leave a solid blue background.
+        style.visuals.widgets.active.bg_fill = Color32::TRANSPARENT;
+        style.visuals.widgets.active.weak_bg_fill = Color32::TRANSPARENT;
+        style.visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
         style.spacing.interact_size.y = 36.0;
         style.spacing.button_padding = egui::vec2(12.0, 8.0);
         // Keep a usable drag target even when content is millions of points tall.
@@ -134,7 +157,7 @@ impl Library {
             || self.catalog.trash.is_some()
             || self.catalog.jobs.message.is_some()
             || self.error.is_some();
-        if crate::chrome::show(
+        if crate::chrome::show_with_back_style(
             ctx,
             "Rphotos",
             if self.semantic_zoom {
@@ -151,6 +174,11 @@ impl Library {
             settings.appearance,
             lang,
             modal_open,
+            if self.settings_open {
+                crate::chrome::BackStyle::Transparent
+            } else {
+                crate::chrome::BackStyle::Solid
+            },
         ) {
             self.back_scene();
         }

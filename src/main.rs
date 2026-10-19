@@ -35,6 +35,7 @@ mod trash_bin;
 mod view_animation;
 mod viewer;
 mod chrome;
+mod reveal;
 mod window_state;
 
 #[derive(Parser)]

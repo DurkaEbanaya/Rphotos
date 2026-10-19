@@ -3,6 +3,148 @@ use super::{ui::Tokens, Appearance, Command, Language, Library};
 use crate::settings::AppSettings;
 use eframe::egui::{self, RichText};
 
+fn radio<T: PartialEq>(ui: &mut egui::Ui, current: &mut T, value: T, label: &str) {
+    let response = ui.radio_value(current, value, label);
+    // Radio strokes extend half a pixel outside their layout rectangle.
+    // Leave space around both the circle and the complete translated label.
+    crate::reveal::bounds(&response, response.rect.expand(3.0));
+}
+
+#[cfg(test)]
+#[test]
+fn reveal_contains_the_whole_radio_circle_and_long_label() {
+    use egui_kittest::{kittest::Queryable, Harness};
+    let label = "Следующее / предыдущее изображение";
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(700.0, 300.0))
+        .build_state(
+            |ctx, value| {
+                let t = Tokens::new(Appearance::Dark, ctx);
+                t.apply(ctx);
+                egui::CentralPanel::default().show(ctx, |ui| radio(ui, value, false, label));
+            },
+            true,
+        );
+    h.run_steps(3);
+    let b = h.get_by_label(label).raw_bounds().unwrap();
+    h.input_mut()
+        .events
+        .push(egui::Event::PointerMoved(egui::pos2(
+            b.x0 as f32 + 6.0,
+            (b.y0 + b.y1) as f32 / 2.0,
+        )));
+    h.run_steps(2);
+    let glow = h
+        .output()
+        .shapes
+        .iter()
+        .find(|shape| matches!(&shape.shape,egui::Shape::Mesh(mesh) if mesh.vertices.len()==42))
+        .unwrap();
+    let circle = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Circle(circle) if circle.radius > 5.0 => Some(circle),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        glow.clip_rect.left() < circle.center.x - circle.radius,
+        "radio edge cannot be cut by Reveal clip"
+    );
+    assert!(
+        glow.clip_rect.right() > b.x1 as f32,
+        "complete label needs right padding"
+    );
+}
+
+fn heading(ctx: &egui::Context, lang: Language, t: &Tokens) {
+    egui::TopBottomPanel::top("preferences_heading")
+        .exact_height(crate::platform::backdrop::PREFERENCES_HEADING_HEIGHT)
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(24, 0)))
+        .show(ctx, |ui| {
+            let rect = ui.max_rect().expand2(egui::vec2(24.0, 0.0));
+            let boundary = rect.top() + crate::platform::backdrop::PREFERENCES_TRANSLUCENT_HEIGHT;
+            // The 64px heading keeps its layout, but only its first 48px
+            // belong to acrylic. The final 16px are opaque, like the page.
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), boundary)),
+                0.0,
+                t.header,
+            );
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(egui::pos2(rect.left(), boundary), rect.max),
+                0.0,
+                t.background,
+            );
+            ui.label(RichText::new(lang.text("Настройки", "Settings")).size(32.0));
+        });
+}
+
+#[cfg(test)]
+#[test]
+fn settings_heading_is_opaque_below_the_library_acrylic_boundary() {
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        for focused in [true, false] {
+            let ctx = egui::Context::default();
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("rphotos.backdrop"), true));
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .focused = Some(focused);
+            let output = ctx.run(input, |ctx| {
+                let t = Tokens::new(appearance, ctx);
+                egui::TopBottomPanel::top("title")
+                    .exact_height(32.0)
+                    .frame(egui::Frame::NONE.fill(t.header))
+                    .show(ctx, |_| {});
+                heading(ctx, Language::Ru, &t);
+            });
+            let fills: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.fill.a() > 0 => Some(rect),
+                    _ => None,
+                })
+                .collect();
+            for point in [
+                egui::pos2(1.0, 88.0),
+                egui::pos2(600.0, 88.0),
+                egui::pos2(1199.0, 88.0),
+            ] {
+                let fill = fills
+                    .iter()
+                    .rev()
+                    .find(|rect| rect.rect.contains(point))
+                    .expect("bottom strip must be painted, including side margins");
+                assert_eq!(fill.fill.a(), 255, "no transparency below y=80");
+                assert_eq!(fill.rect.top(), 80.0);
+                assert_eq!(fill.rect.bottom(), 96.0);
+            }
+            let header = fills
+                .iter()
+                .rev()
+                .find(|rect| rect.rect.contains(egui::pos2(600.0, 70.0)))
+                .unwrap();
+            assert_eq!(header.rect.bottom(), 80.0);
+            assert_eq!(header.fill.a(), if focused { 190 } else { 255 });
+            assert!(fills
+                .iter()
+                .all(|rect| rect.fill.a() == 255 || rect.rect.bottom() <= 80.0));
+        }
+    }
+}
+
 impl Library {
     pub(super) fn preferences(
         &mut self,
@@ -10,6 +152,7 @@ impl Library {
         settings: &mut AppSettings,
         t: &Tokens,
     ) {
+        crate::platform::backdrop::painted_preferences(ctx);
         let lang = settings.language;
         let blocked =
             self.remove_source.is_some() || self.error.is_some() || self.cache_errors_open;
@@ -26,16 +169,7 @@ impl Library {
                     self.cache_task_action(action);
                 });
         }
-        egui::TopBottomPanel::top("preferences_heading")
-            .exact_height(64.0)
-            .frame(
-                egui::Frame::NONE
-                    .fill(t.header)
-                    .inner_margin(egui::Margin::symmetric(24, 0)),
-            )
-            .show(ctx, |ui| {
-                ui.label(RichText::new(lang.text("Настройки", "Settings")).size(32.0));
-            });
+        heading(ctx, lang, t);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(t.background))
             .show(ctx, |ui| {
@@ -55,17 +189,17 @@ impl Library {
                         if ui.button(lang.text("Добавить папку", "Add folder")).clicked() { self.pick_source(ctx); }
                         ui.add_space(20.0);
                          super::icons::heading(ui,"Язык / Language",super::icons::Icon::Language);
-                        ui.radio_value(&mut settings.language, Language::Ru, "Русский");
-                        ui.radio_value(&mut settings.language, Language::En, "English");
+                         radio(ui,&mut settings.language, Language::Ru, "Русский");
+                         radio(ui,&mut settings.language, Language::En, "English");
                         ui.add_space(20.0);
                          super::icons::heading(ui,lang.text("Оформление", "Appearance"),super::icons::Icon::Theme);
-                        ui.radio_value(&mut settings.appearance, Appearance::Light, lang.text("Светлое", "Light"));
-                        ui.radio_value(&mut settings.appearance, Appearance::Dark, lang.text("Тёмное", "Dark"));
-                        ui.radio_value(&mut settings.appearance, Appearance::System, lang.text("Как в системе", "Use system setting"));
+                         radio(ui,&mut settings.appearance, Appearance::Light, lang.text("Светлое", "Light"));
+                         radio(ui,&mut settings.appearance, Appearance::Dark, lang.text("Тёмное", "Dark"));
+                         radio(ui,&mut settings.appearance, Appearance::System, lang.text("Как в системе", "Use system setting"));
                         ui.add_space(20.0);
                          super::icons::heading(ui,lang.text("Колесо мыши", "Mouse wheel"),super::icons::Icon::Mouse);
-                        ui.radio_value(&mut settings.mouse_wheel_zoom, false, lang.text("Следующее / предыдущее изображение", "View next or previous item"));
-                        ui.radio_value(&mut settings.mouse_wheel_zoom, true, lang.text("Увеличение и уменьшение", "Zoom in and out"));
+                         radio(ui,&mut settings.mouse_wheel_zoom, false, lang.text("Следующее / предыдущее изображение", "View next or previous item"));
+                         radio(ui,&mut settings.mouse_wheel_zoom, true, lang.text("Увеличение и уменьшение", "Zoom in and out"));
                          ui.label(lang.text("Ctrl + колесо всегда меняет масштаб.", "Ctrl + wheel always zooms."));
                          ui.add_space(20.0);
                          super::icons::heading(ui,lang.text("Предзагрузка миниатюр", "Thumbnail preloading"),super::icons::Icon::Analysis);

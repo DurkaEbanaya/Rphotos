@@ -83,6 +83,16 @@ impl Library {
                             vec2(width, 48.0),
                         );
                         let response = ui.allocate_rect(r, Sense::click());
+                        let galley = ui.painter().layout_no_wrap(
+                            label.clone(),
+                            egui::FontId::proportional(22.0),
+                            t.accent,
+                        );
+                        let text_rect = Rect::from_min_size(
+                            pos2(r.left(), r.center().y - galley.size().y / 2.0),
+                            galley.size(),
+                        );
+                        crate::reveal::bounds(&response, text_rect.expand2(vec2(0.0, 8.0)));
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
@@ -90,13 +100,7 @@ impl Library {
                                 &label,
                             )
                         });
-                        ui.painter().text(
-                            r.left_center(),
-                            egui::Align2::LEFT_CENTER,
-                            label,
-                            egui::FontId::proportional(22.0),
-                            t.accent,
-                        );
+                        ui.painter().galley(text_rect.min, galley, t.accent);
                         if response.clicked() {
                             self.scroll_to_month = Some(m.key.clone());
                             self.semantic_zoom = false;
@@ -416,11 +420,7 @@ impl Library {
                                     );
                                 }
                                 let selected = self.selection.contains(&photo.id);
-                                if selected
-                                    || response.hovered()
-                                    || response.has_focus()
-                                    || self.focused_photo == Some(photo.id)
-                                {
+                                if selected || self.focused_photo == Some(photo.id) {
                                     ui.painter().rect_stroke(
                                         rect,
                                         0.0,
@@ -430,6 +430,9 @@ impl Library {
                                         ),
                                         egui::StrokeKind::Inside,
                                     );
+                                }
+                                if self.focused_photo == Some(photo.id) && ui.is_enabled() {
+                                    crate::reveal::focus(ui.painter(), rect);
                                 }
                                 if self.selecting {
                                     let check = Rect::from_min_size(
@@ -773,6 +776,7 @@ impl Library {
                 // The active date is a label, not a hover-only tooltip. Give it
                 // its own backing so year ticks cannot make it unreadable.
                 let label_rect = Rect::from_min_size(pos2(x - 72.0, y - 17.0), vec2(65.0, 34.0));
+                crate::reveal::exclude(ui.ctx(), label_rect);
                 ui.painter().rect_filled(label_rect, 0.0, t.background);
                 ui.painter().text(
                     label_rect.right_center() - vec2(3.0, 0.0),

@@ -37,6 +37,24 @@
   persisted embeddings, cosine search/content albums; `gestures.rs`: pager.
 - `src/platform/{printing,jobs,clipboard,backdrop}.rs`: PDF/Print portal, share jobs,
   file clipboard и Wayland blur; `src/library/discovery.rs`: album cards/search suggestions.
+  Backdrop выбирает title32/library80/preferences80; layout heading64 сохраняется,
+  но только верхние48px heading полупрозрачны, нижние16px окрашены фоном страницы.
+  после UI обновляется region того же surface commit. Painted-preferences marker
+  нужен на кадре Back/Escape, где уже сменилось state, но ещё нарисована шапка.
+  Back не имеет постоянной подложки: accent только pointer-down; Settings сохраняет
+  белую стрелку, остальные library Back — цвет основного текста.
+  `src/reveal.rs` — общий end-pass Reveal Highlight/Focus: existing egui hovered/focus/
+  dragged responses, максимум16, clipped meshes/edge segments, без новых hit targets.
+  Tokens оставляют idle/hover/focus backgrounds прозрачными, check/input outlines
+  различимыми. Custom controls также убирают flat hover fill; реальные photo covers,
+  selection и favorites не считаются button background и сохраняются.
+  Reveal exclusions/frame-local bounds: search и active-date backing без эффекта;
+  informational labels не selectable. Tab text centered с12px padding, Reveal
+  visual bounds symmetric независимо от hit target. Непрерывный border mesh не
+  создаёт AA joint dots. Rules перезаписываются каждый pass, не растут с каталогом.
+  Popup Area ignored by ID (container != action); exact painted bounds проверяются
+  дополнительно к egui hover slop. Month row Reveal только text bounds, radio bounds
+  +3px/hover expansion0; chooser не отключает overflow целиком.
 - `src/platform/files.rs`: Save copy с atomic no-clobber и Linux OpenFile portal
    ask(true). Не подменяет Share и не меняет оригинал.
 - `src/platform/edits.rs`: lossless EXIF orientation transforms JPEG/PNG,

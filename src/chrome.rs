@@ -3,6 +3,12 @@ use eframe::egui::{self, pos2, vec2, Color32, Rect, Sense, Stroke};
 
 use crate::library::{ui::Tokens, Appearance, Language};
 
+#[derive(Clone, Copy)]
+pub(crate) enum BackStyle {
+    Solid,
+    Transparent,
+}
+
 pub(crate) fn show(
     ctx: &egui::Context,
     title: &str,
@@ -10,6 +16,26 @@ pub(crate) fn show(
     appearance: Appearance,
     lang: Language,
     blocked: bool,
+) -> bool {
+    show_with_back_style(
+        ctx,
+        title,
+        back,
+        appearance,
+        lang,
+        blocked,
+        BackStyle::Transparent,
+    )
+}
+
+pub(crate) fn show_with_back_style(
+    ctx: &egui::Context,
+    title: &str,
+    back: Option<&str>,
+    appearance: Appearance,
+    lang: Language,
+    blocked: bool,
+    back_style: BackStyle,
 ) -> bool {
     let (fullscreen, maximized) = ctx.input(|i| {
         (
@@ -50,18 +76,36 @@ pub(crate) fn show(
                 );
             if let Some(label) = back {
                 let rect = Rect::from_min_size(r.min, vec2(48.0, 32.0));
-                let response = ui.interact(rect, ui.id().with("back"), Sense::click());
+                let response = ui.interact(
+                    rect,
+                    ui.id().with("back"),
+                    if blocked {
+                        Sense::hover()
+                    } else {
+                        Sense::click()
+                    },
+                );
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, !blocked, label)
                 });
-                // Photos uses the blue title-bar Back even in the neutral fallback.
-                ui.painter().rect_filled(
-                    rect,
-                    0.0,
-                    if blocked { tokens.muted } else { tokens.accent },
-                );
+                // Settings leave the acrylic title bar visible through Back.
+                // Only pointer-down gets a blue fill; hover/focus do not add
+                // another translucent coat that would change header opacity.
+                if !blocked && response.is_pointer_button_down_on() {
+                    ui.painter().rect_filled(
+                        rect,
+                        0.0,
+                        if blocked { tokens.muted } else { tokens.accent },
+                    );
+                }
                 let c = rect.center();
-                let s = Stroke::new(1.0_f32, Color32::WHITE);
+                let s = Stroke::new(
+                    1.0_f32,
+                    match back_style {
+                        BackStyle::Transparent => Color32::WHITE,
+                        BackStyle::Solid => tokens.text,
+                    },
+                );
                 ui.painter()
                     .line_segment([c + vec2(-6.0, 0.0), c + vec2(6.0, 0.0)], s);
                 ui.painter()
@@ -86,22 +130,21 @@ pub(crate) fn show(
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
                 });
-                let hover = response.hovered();
-                if hover {
+                if response.is_pointer_button_down_on() {
                     ui.painter().rect_filled(
                         rect,
                         0.0,
                         if n == 2 {
                             Color32::from_rgb(196, 43, 28)
                         } else {
-                            tokens.tile
+                            tokens.accent
                         },
                     );
                 }
                 let c = rect.center();
                 let s = Stroke::new(
                     1.0_f32,
-                    if hover && n == 2 {
+                    if response.is_pointer_button_down_on() && n == 2 {
                         Color32::WHITE
                     } else {
                         tokens.text
@@ -242,6 +285,109 @@ fn resize_edges(ctx: &egui::Context) {
 mod tests {
     use super::*;
     use egui_kittest::{kittest::Queryable, Harness};
+
+    #[test]
+    fn settings_back_has_no_fill_until_pressed_and_keeps_its_arrow_color() {
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            let ctx = egui::Context::default();
+            for (events, blocked, pressed) in [
+                (vec![], false, false),
+                (
+                    vec![egui::Event::PointerMoved(pos2(24.0, 16.0))],
+                    false,
+                    false,
+                ),
+                (
+                    vec![egui::Event::PointerButton {
+                        pos: pos2(24.0, 16.0),
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    }],
+                    false,
+                    true,
+                ),
+                (
+                    vec![egui::Event::PointerButton {
+                        pos: pos2(24.0, 16.0),
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    }],
+                    false,
+                    false,
+                ),
+                (
+                    vec![egui::Event::PointerButton {
+                        pos: pos2(24.0, 16.0),
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    }],
+                    true,
+                    false,
+                ),
+            ] {
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            vec2(1000.0, 760.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        show_with_back_style(
+                            ctx,
+                            "Rphotos",
+                            Some("Back"),
+                            appearance,
+                            Language::En,
+                            blocked,
+                            BackStyle::Transparent,
+                        );
+                    },
+                );
+                let back_rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(48.0, 32.0));
+                let fills: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.rect == back_rect && rect.fill.a() == 255 =>
+                        {
+                            Some(rect.fill)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    fills.len(),
+                    usize::from(pressed),
+                    "idle, hover, release and disabled must have no button background"
+                );
+                if pressed {
+                    assert_eq!(fills[0], Color32::from_rgb(0, 120, 215));
+                }
+                let arrow: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::LineSegment { points, stroke }
+                            if points.iter().all(|point| back_rect.contains(*point))
+                                && stroke.color == Color32::WHITE =>
+                        {
+                            Some(stroke.color)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(arrow.len(), 3);
+                assert!(arrow.iter().all(|color| *color == Color32::WHITE));
+            }
+        }
+    }
 
     #[test]
     fn title_has_no_separator_between_window_and_application_commands() {
