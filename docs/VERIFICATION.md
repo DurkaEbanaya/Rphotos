@@ -4,7 +4,10 @@ Audit CI47ec70b: Linux полностью прошёл; Windows выявил о�
 блокирующий ReplaceFile (os error32), macOS — неретейнимый AnyObject в Share array.
 Исправление закрывает File, сохраняя TempPath guard, и сохраняет concrete NSURL
 при retain массива, стирая lightweight generics только на границе AppKit API.
-Тесты не отключались; результат повторного native CI фиксируется после завершения.
+Тесты не отключались. Повторный CI для `960cec8` успешен на всех трёх ОС:
+https://github.com/DurkaEbanaya/Rphotos/actions/runs/39306756472 .
+Tests, all-features check, opt-dev build, package regression и upload прошли.
+Это не заменяет ручную приёмку GUI/печати/Share на настоящем устройстве.
 
 Проверено локально на Linux / KDE Wayland, Rust 1.98.1.
 Это запись фактически выполненных проверок, не матрица обещанной поддержки.
@@ -35,7 +38,7 @@ GPU captures: `/tmp/opencode/rphotos-audit-captures`, библиотека/Revea
 `viewer-resize` и `viewer-overwrite` просмотрены. Native opt-dev smoke:
 `/tmp/opencode/rphotos-audit-smoke-lamqe2ak` — обе сцены по5с в isolated XDG,
 процессы закрыты. Реальные clipboard/print/share не вызывались.
-Новые Win/Mac adapters ещё требуют remote compilation/native acceptance.
+Новые Win/Mac adapters прошли remote compilation; native acceptance остаётся.
 
 Windows10 tablet через SSH: PowerShell parser принял фактический print-helper
 (0 parse errors); WPF/ReachFramework types доступны. Создана одна синтетическая

@@ -22,7 +22,7 @@
 | 15 | Настоящий focus thumbnail не отключает grid navigation, regression с focused photo → End. |
 | 16 | Helpers с30с deadline; ожидание native chooser можно покинуть без обещания отмены другой программы. Save original нельзя бросить/закрыть. |
 | 17 | Native100% viewport tiles2048, source dimensions; LittleCMS embedded RGB ICC→sRGB; optional installed LibRaw fallback при отсутствии JPEG. Не disk-backed decode, не monitor-ICC/CMYK/16-bit pipeline; preview при наличии по-прежнему предпочитается. |
-| 18 | Print Windows WPF/macOS PDFKit, OpenWith Win32/macOS chooser, native Share WinRT/AppKit, blur/vibrancy через window-vibrancy. Linux portal/actions сохранены. Новые Win/Mac пути требуют CI и реальных диалогов/дисплея; Linux не имеет универсального Share portal. |
+| 18 | Print Windows WPF/macOS PDFKit, OpenWith Win32/macOS chooser, native Share WinRT/AppKit, blur/vibrancy через window-vibrancy. Linux portal/actions сохранены. Win/Mac пути прошли CI, но требуют реальных диалогов/дисплея; Linux не имеет универсального Share portal. |
 | 19 | **Позже** — поиск не расширялся; перенос vocabulary в worker не меняет алгоритм. |
 | 20 | README/PRODUCT/IMPLEMENTATION/VERIFICATION обновляются этим срезом. Preview1 исторический, не содержит новых изменений; новый release только после native CI. |
 

@@ -42,7 +42,7 @@ SHA256 всего архива находится в соседнем `.sha256`.
   aliases отклоняются до передачи фото/текста. Не используйте недоверенный локальный proxy.
 - Качество RU/EN поиска и группировки настоящих моделей ещё не принято.
 - Native touch, реальные printer jobs и полный clipboard workflow не приняты.
-- Новые Windows/macOS native adapters требуют CI и реальной проверки диалогов/дисплея;
+- Новые Windows/macOS native adapters прошли CI и требуют реальной проверки диалогов/дисплея;
   успешная компиляция не подтверждает визуальное поведение или отправку print job.
 - Linux Share остаётся собственным меню: универсального OS Share portal нет.
 - Нет crop/цветокоррекции, видео, OneDrive, People/face recognition и camera/USB import.
