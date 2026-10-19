@@ -98,6 +98,7 @@ impl Backdrop {
             }
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
+                let _ = height;
                 self.native
                     .as_mut()
                     .is_some_and(|native| native.update(ctx))
