@@ -450,7 +450,13 @@ impl Library {
     ) {
         self.catalog_dialogs(ctx, lang);
         if self.cache_errors_open {
-            let failures = self.thumbnails.failures();
+            let page_id = egui::Id::new("thumbnail_errors.page");
+            let mut page = ctx.data(|d| d.get_temp::<usize>(page_id)).unwrap_or(0);
+            let (total, mut failures) = self.thumbnails.failure_page(page);
+            if page > 0 && failures.is_empty() {
+                page = 0;
+                failures = self.thumbnails.failure_page(0).1;
+            }
             let mut close = false;
             let response = egui::Modal::new(egui::Id::new("thumbnail_errors")).show(ctx, |ui| {
                 ui.set_width((ctx.screen_rect().width() - 48.0).clamp(240.0, 1000.0));
@@ -458,6 +464,11 @@ impl Library {
                 ui.label(lang.text("Отчёт хранится локально. Исходные фотографии не изменены.", "The report stays local. Original photos are unchanged."));
                 ui.label(self.thumbnails.directory().join("last-build-errors.json").to_string_lossy());
                 if failures.is_empty() { ui.label(lang.text("Записанных ошибок пока нет. Для старой прогрузки без отчёта повторите команду кеширования.", "No recorded errors yet. For older builds without a report, run caching again.")); }
+                if total>50 {ui.horizontal(|ui|{
+                    if ui.add_enabled(page>0,egui::Button::new(lang.text("Предыдущие","Previous"))).clicked(){page-=1;}
+                    ui.label(format!("{} / {}",page+1,total.div_ceil(50)));
+                    if ui.add_enabled((page+1)*50<total,egui::Button::new(lang.text("Следующие","Next"))).clicked(){page+=1;}
+                });}
                 egui::ScrollArea::vertical().auto_shrink([false,true]).max_height((ctx.screen_rect().height() - 230.0).max(100.0)).show(ui, |ui| {
                     for (i,error) in failures.iter().enumerate() {
                         ui.push_id(i, |ui| {
@@ -470,6 +481,7 @@ impl Library {
                 });
                 close = ui.button(lang.text("Закрыть", "Close")).clicked();
             });
+            ctx.data_mut(|d| d.insert_temp(page_id, page));
             if close || response.should_close() {
                 self.cache_errors_open = false;
             }

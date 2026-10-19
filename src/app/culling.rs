@@ -16,6 +16,14 @@ use super::App;
 /// How long the outcome stays on screen.
 const TOAST_DURATION: Duration = Duration::from_millis(2500);
 
+pub(super) struct TrashJob {
+    results: std::sync::mpsc::Receiver<(PathBuf,Result<(),String>)>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    total:usize,
+    done:usize,
+    errors:Vec<String>,
+}
+
 /// A short message painted over the image area, e.g. "Moved to Trash".
 pub(crate) struct Toast {
     text: String,
@@ -73,40 +81,44 @@ impl App {
     /// showing the file does the move through `Pane::remove_current`, so a
     /// failed move leaves it untouched; the other panes follow by position.
     pub(super) fn trash_paths(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
-        let mut changed = false;
-        for path in paths {
-            let showing = self
-                .panes
-                .iter()
-                .position(|p| p.image_paths.get(p.current_index) == Some(&path));
-            let result = match showing {
-                Some(i) => self.panes[i]
-                    .remove_current(ctx, trash_bin::move_to_trash)
-                    .map(|_| ()),
-                None => trash_bin::move_to_trash(&path),
-            };
-            match result {
-                Ok(()) => {
-                    changed = true;
-                    log::info!("Moved to trash: {}", path.display());
-                    for pane in &mut self.panes {
-                        if let Some(index) = pane.image_paths.iter().position(|p| *p == path) {
-                            pane.remove_index(index, ctx);
-                        }
+        if self.trash_job.is_some(){return;}
+        let (tx,rx)=std::sync::mpsc::sync_channel(16);
+        let cancel=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.trash_job=Some(TrashJob{results:rx,cancel:cancel.clone(),total:paths.len(),done:0,errors:Vec::new()});
+        let wake=ctx.clone();
+        std::thread::spawn(move||{
+            for path in paths {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed){break;}
+                let result=trash_bin::move_to_trash(&path).map_err(|e|e.to_string());
+                if tx.send((path,result)).is_err(){break;}wake.request_repaint();
+            }
+            wake.request_repaint();
+        });
+        ctx.request_repaint();
+    }
+
+    fn poll_trash(&mut self,ctx:&egui::Context) {
+        let mut changed=false;let mut finished=false;
+        if let Some(job)=&mut self.trash_job {
+            for _ in 0..32 {
+                match job.results.try_recv() {
+                    Ok((path,result))=>{
+                        job.done+=1;
+                        if let Err(error)=result {job.errors.push(format!("{}: {error}",path.display()));}
+                        else {changed=true;for pane in &mut self.panes {if let Some(i)=pane.image_paths.iter().position(|p|*p==path){pane.remove_index(i,ctx);}}}
                     }
-                    self.show_toast(format!("Moved to Trash: {}", file_name(&path)), false);
-                }
-                Err(e) => {
-                    log::error!("Could not move {} to trash: {}", path.display(), e);
-                    self.show_toast(
-                        format!("Could not move {} to Trash: {}", file_name(&path), e),
-                        true,
-                    );
+                    Err(std::sync::mpsc::TryRecvError::Disconnected)=>{finished=true;break;}
+                    Err(_)=>break,
                 }
             }
         }
-        if changed { self.library.refresh(); }
-        ctx.request_repaint();
+        if changed {self.library.refresh();}
+        if finished {
+            let job=self.trash_job.take().unwrap();
+            let text=if job.errors.is_empty(){format!("{} / {} — {}",job.done,job.total,self.settings.language.text("обработано","processed"))}else{job.errors.join("\n")};
+            self.show_toast(text,!job.errors.is_empty());
+            self.trash_errors=job.errors;
+        }
     }
 
     pub(super) fn show_toast(&mut self, text: String, is_error: bool) {
@@ -119,6 +131,29 @@ impl App {
 
     /// Paint the toast at the bottom center of the window until it expires.
     pub(super) fn paint_toast(&mut self, ctx: &egui::Context) {
+        if let Some(error)=crate::settings::take_error(){self.settings_error=Some(error);}
+        if let Some(error)=self.settings_error.clone() {
+            let response=egui::Modal::new(egui::Id::new("settings_write_error")).show(ctx,|ui|{
+                ui.set_max_width(520.0);ui.heading(self.settings.language.text("Ошибка настроек","Settings error"));ui.label(error);
+                ui.button(self.settings.language.text("Закрыть","Close")).clicked()
+            });if response.inner||response.should_close(){self.settings_error=None;}
+        }
+        self.poll_trash(ctx);
+        if !self.trash_errors.is_empty() {
+            let response=egui::Modal::new(egui::Id::new("trash_results")).show(ctx,|ui|{
+                ui.set_max_width(760.0);ui.heading(self.settings.language.text("Не удалось переместить в корзину","Could not move to Trash"));
+                egui::ScrollArea::vertical().max_height(400.0).show(ui,|ui|{for error in &self.trash_errors{ui.label(error);}});
+                ui.button(self.settings.language.text("Закрыть","Close")).clicked()
+            });if response.inner||response.should_close(){self.trash_errors.clear();}
+        }
+        if let Some(job)=&self.trash_job {
+            egui::Area::new(egui::Id::new("trash_progress")).anchor(egui::Align2::CENTER_BOTTOM,[0.0,-72.0]).show(ctx,|ui|{
+                egui::Frame::popup(ui.style()).show(ui,|ui|{
+                    ui.label(format!("{}: {} / {}",self.settings.language.text("Корзина","Trash"),job.done,job.total));
+                    if ui.button(self.settings.language.text("Остановить очередь","Stop queued files")).clicked(){job.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}
+                });
+            });ctx.request_repaint_after(Duration::from_millis(50));
+        }
         let Some(toast) = &self.toast else {
             return;
         };

@@ -229,6 +229,7 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dynamic
     let format = reader.format();
     record.format = format_name(format, path);
     let mut decoder = reader.into_decoder()?;
+    let icc=decoder.icc_profile().ok().flatten();
     match decoder.exif_metadata() {
         Ok(Some(bytes)) => record.exif = metadata::parse_exif(bytes),
         Ok(None) => {}
@@ -251,7 +252,14 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dynamic
             record.exif = metadata::parse_exif(bytes);
         }
     }
-    image.map(|image| (image, orientation))
+    image.map(|mut image| {
+        if let Some(profile)=icc {
+            // Keep viewable pixels on a malformed profile, but make fallback
+            // explicit in the log rather than treating guessed colors as ICC.
+            if let Err(error)=crate::platform::color::to_srgb(&mut image,&profile){log::warn!("ICC fallback: {error:#}");}
+        }
+        (image, orientation)
+    })
 }
 
 /// Decode with the image crate's 512 MB limit on the pixel buffer, which
@@ -273,6 +281,10 @@ fn decode_raw_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dyn
         record.exif = metadata::parse_exif(bytes);
     }
     let Some(jpeg) = contents.jpeg else {
+        match crate::platform::raw_decode::decode(path) {
+            Ok(image)=>return Ok((image,Orientation::NoTransforms)),
+            Err(error)=>log::debug!("Full RAW fallback: {error:#}"),
+        }
         // An expected case with its own message in the pane, so the
         // callers do not log it as a failure.
         log::debug!("No embedded JPEG in {}", path.display());

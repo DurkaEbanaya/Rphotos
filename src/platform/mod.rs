@@ -7,3 +7,7 @@ pub(crate) mod clipboard;
 mod files;
 pub(crate) mod edits;
 pub(crate) mod resize;
+mod recovery;
+pub(crate) mod color;
+pub(crate) mod raw_decode;
+pub(crate) mod sharing;

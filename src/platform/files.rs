@@ -52,11 +52,7 @@ pub(super) fn reveal(path: &Path) -> Result<()> {
         } else {
             target.as_path()
         };
-        if !std::process::Command::new("xdg-open")
-            .arg(folder)
-            .status()?
-            .success()
-        {
+        if !run_helper(std::process::Command::new("xdg-open").arg(folder))?.success() {
             bail!("The file manager could not open this folder");
         }
     }
@@ -78,11 +74,31 @@ pub(super) fn reveal(path: &Path) -> Result<()> {
         if select {
             command.arg("-R");
         }
-        if !command.arg(&target).status()?.success() {
+        if !run_helper(command.arg(&target))?.success() {
             bail!("Finder could not reveal this photo");
         }
     }
     Ok(())
+}
+
+pub(super) fn run_helper(command: &mut std::process::Command) -> Result<std::process::ExitStatus> {
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if start.elapsed() > std::time::Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("System helper timed out");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 pub(super) fn save_copy(source: &Path, destination: &Path) -> Result<()> {
@@ -134,9 +150,60 @@ pub(super) fn open_with(path: &Path) -> Result<()> {
     })
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(super) fn open_with(_path: &Path) -> Result<()> {
-    bail!("The system application chooser is not implemented on this platform yet")
+#[cfg(target_os = "windows")]
+pub(super) fn open_with(path: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+        UI::Shell::{SHOpenWithDialog, OAIF_EXEC, OPENASINFO},
+    };
+    let file = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // A worker-local STA, no registry/default-association changes requested.
+    unsafe {
+        let initialized = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+        if initialized < 0 {
+            bail!("Cannot initialize application chooser ({initialized:#x})");
+        }
+        let info = OPENASINFO {
+            pcszFile: file.as_ptr(),
+            pcszClass: std::ptr::null(),
+            oaifInFlags: OAIF_EXEC,
+        };
+        let result = SHOpenWithDialog(std::ptr::null_mut(), &info);
+        CoUninitialize();
+        if result < 0 && result as u32 != 0x800704c7 {
+            bail!("Application chooser failed ({result:#x})");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn open_with(path: &Path) -> Result<()> {
+    // osascript owns the native chooser and its main run loop. Pass paths as
+    // argv, never interpolate a filename into AppleScript source.
+    let script = r#"on run argv
+ try
+ set chosen to choose application with prompt "Open this photo with:" as alias
+ tell application "Finder" to open (POSIX file (item 1 of argv) as alias) using chosen
+ on error number -128
+ return
+ end try
+ end run"#;
+    // A native chooser may legitimately remain open while the user decides.
+    if !std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", script, "--"])
+        .arg(path)
+        .status()?
+        .success()
+    {
+        bail!("Application chooser could not open the photo");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

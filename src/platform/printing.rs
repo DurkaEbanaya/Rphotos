@@ -127,6 +127,7 @@ pub(crate) fn pdf(paths: &[std::path::PathBuf], page: Page) -> Result<Vec<u8>> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn print(paths: &[std::path::PathBuf]) -> Result<()> {
+    validate_job(paths)?;
     use ashpd::desktop::print::{Orientation, PrintProxy};
     pollster::block_on(async {
         let proxy = PrintProxy::new()
@@ -179,9 +180,106 @@ pub(crate) fn print(paths: &[std::path::PathBuf]) -> Result<()> {
     })
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn print(_paths: &[std::path::PathBuf]) -> Result<()> {
-    bail!("Native printing is not implemented on this platform yet; export PDF instead")
+fn validate_job(paths: &[std::path::PathBuf]) -> Result<()> {
+    if paths.is_empty() || paths.len() > 100 {
+        bail!("Select between1 and100 photos to print");
+    }
+    for path in paths {
+        std::fs::File::open(path).with_context(|| format!("Cannot read {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn print(paths: &[std::path::PathBuf]) -> Result<()> {
+    validate_job(paths)?;
+    use std::io::Write;
+    let mut file = tempfile::Builder::new().suffix(".pdf").tempfile()?;
+    file.write_all(&pdf(paths, Page::default())?)?;
+    file.as_file().sync_all()?;
+    // PDFKit's native print operation runs on the helper's main thread. No
+    // silent lp submission: the standard print panel is always shown.
+    let script = r#"ObjC.import('AppKit'); ObjC.import('PDFKit');
+function run(argv) {
+  $.NSApplication.sharedApplication;
+  var url=$.NSURL.fileURLWithPath(argv[0]);
+  var doc=$.PDFDocument.alloc.initWithURL(url);
+  if (!doc) throw Error('Cannot read print PDF');
+  var op=doc.printOperationForPrintInfoScalingModeAutoRotate($.NSPrintInfo.sharedPrintInfo,0,true);
+  if (!op) throw Error('Cannot create print operation');
+  op.setShowsPrintPanel(true); op.setShowsProgressPanel(true); op.runOperation;
+}"#;
+    let status = std::process::Command::new("/usr/bin/osascript")
+        .args(["-l", "JavaScript", "-e", script, "--"])
+        .arg(file.path())
+        .status()?;
+    if !status.success() {
+        bail!("Native macOS print panel failed");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn print(paths: &[std::path::PathBuf]) -> Result<()> {
+    validate_job(paths)?;
+    // Windows PowerShell/WPF owns the STA and the native printer chooser.
+    // The helper reads private JSON, not interpolated filenames or shell text.
+    let directory = tempfile::tempdir()?;
+    let mut images = Vec::new();
+    for (index, path) in paths.iter().enumerate() {
+        let loaded = crate::file_io::load_image(path);
+        let mut image = loaded.image.context("Cannot decode print photo")?;
+        image.apply_orientation(loaded.orientation);
+        if image.width() > 7000 || image.height() > 7000 {
+            image = image.thumbnail(7000, 7000);
+        }
+        let output = directory.path().join(format!("{index}.png"));
+        paper_rgb(image).save(&output)?;
+        images.push(output);
+    }
+    let manifest = directory.path().join("photos.json");
+    std::fs::write(&manifest, serde_json::to_vec(&images)?)?;
+    let script = r#"param([string]$Manifest)
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,ReachFramework,System.Printing
+$paths=Get-Content -Raw -LiteralPath $Manifest | ConvertFrom-Json
+$dialog=New-Object System.Windows.Controls.PrintDialog
+if ($dialog.ShowDialog() -ne $true) { exit 0 }
+$document=New-Object System.Windows.Documents.FixedDocument
+foreach ($path in $paths) {
+ $page=New-Object System.Windows.Documents.FixedPage
+ $page.Width=$dialog.PrintableAreaWidth; $page.Height=$dialog.PrintableAreaHeight
+ $bitmap=New-Object System.Windows.Media.Imaging.BitmapImage
+ $bitmap.BeginInit(); $bitmap.CacheOption=[System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+ $bitmap.UriSource=[Uri]$path; $bitmap.EndInit(); $bitmap.Freeze()
+ $image=New-Object System.Windows.Controls.Image
+ $image.Source=$bitmap; $image.Width=$page.Width; $image.Height=$page.Height
+ $image.Stretch=[System.Windows.Media.Stretch]::Uniform
+ [void]$page.Children.Add($image)
+ $content=New-Object System.Windows.Documents.PageContent
+ ([System.Windows.Markup.IAddChild]$content).AddChild($page)
+ [void]$document.Pages.Add($content)
+}
+$dialog.PrintDocument($document.DocumentPaginator,'Rphotos')
+"#;
+    let helper = directory.path().join("print.ps1");
+    std::fs::write(&helper, script)?;
+    let status = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-STA",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(helper)
+        .arg(manifest)
+        .status()?;
+    if !status.success() {
+        bail!("Native Windows print dialog failed");
+    }
+    Ok(())
 }
 
 pub(crate) fn export(paths: &[std::path::PathBuf], path: &Path) -> Result<()> {

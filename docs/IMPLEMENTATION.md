@@ -1,5 +1,9 @@
 # Rphotos: рабочая карта реализации
 
+**Последний срез:** [AUDIT-FIXES.md](AUDIT-FIXES.md) — статус пунктов1–20,
+схема11/native detail/ICC/LibRaw/recovery/Save overwrite/native OS adapters.
+При расхождении со старыми этапами ниже использовать эту матрицу и VERIFICATION.
+
 Этот файл — точка входа после потери/сжатия контекста. Не заменять измеренный
 референс общим представлением о Windows Photos.
 

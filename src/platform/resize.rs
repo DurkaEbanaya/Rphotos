@@ -83,9 +83,78 @@ pub(crate) fn save(source: &Path, destination: &Path, options: Options) -> Resul
     Ok(())
 }
 
+/// Explicit in-place save, only matching still-image containers. Recovery and
+/// attribute preservation use the exact same guarded replacement as rotation.
+pub(crate) fn overwrite(source: &Path, options: Options) -> Result<()> {
+    options.validate()?;
+    let before = super::edits::read_original(source)?;
+    let jpeg = before.starts_with(b"\xff\xd8");
+    let png = before.starts_with(b"\x89PNG\r\n\x1a\n");
+    if !(jpeg || png) || options.jpeg != jpeg {
+        bail!("Overwrite requires the original JPEG/PNG format; use Save a copy for format conversion");
+    }
+    if png && before.windows(4).any(|w| w == b"acTL") {
+        bail!("Animated PNG is not overwritten");
+    }
+    let loaded = crate::file_io::load_image(source);
+    let mut image = loaded.image.context("Cannot decode original")?;
+    image.apply_orientation(loaded.orientation);
+    let image = image.resize_exact(
+        options.width,
+        options.height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let mut output = std::io::Cursor::new(Vec::new());
+    if jpeg {
+        let rgb = super::printing::paper_rgb(image);
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, options.quality).encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )?;
+    } else {
+        image.write_to(&mut output, image::ImageFormat::Png)?;
+    }
+    super::edits::replace(source, &before, &output.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_overwrite_replaces_original_and_durable_recovery_restores_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("original.png");
+        image::RgbImage::new(40, 30).save(&source).unwrap();
+        let original = std::fs::read(&source).unwrap();
+        overwrite(
+            &source,
+            Options {
+                width: 20,
+                height: 15,
+                quality: 90,
+                jpeg: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(image::image_dimensions(&source).unwrap(), (20, 15));
+        let current = std::fs::read(&source).unwrap();
+        assert_eq!(
+            super::super::recovery::load(&source, &current).unwrap(),
+            original
+        );
+        assert!(overwrite(
+            &source,
+            Options {
+                width: 20,
+                height: 15,
+                quality: 90,
+                jpeg: true
+            }
+        )
+        .is_err());
+    }
     #[test]
     fn resized_copy_bakes_orientation_preserves_original_and_never_clobbers() {
         let temp = tempfile::tempdir().unwrap();

@@ -3,12 +3,40 @@
 Проверено локально на Linux / KDE Wayland, Rust 1.98.1.
 Это запись фактически выполненных проверок, не матрица обещанной поддержки.
 
+## Последний срез аудита
+
+Матрица1–20: [AUDIT-FIXES.md](AUDIT-FIXES.md). Схема11, backup перед миграцией,
+rename identity, отдельные interactive/analysis DB lanes, FS/EXIF/pause вне write
+transaction. Regression проверяет интерактивную запись из scan callback и rollback
+отменённого наблюдения, Favorite при paused worker без повторного открытия оригинала.
+Keyboard test выполняет F11/fullscreen Esc/zoom arrows и настоящий focus фото→End.
+
+Save overwrite проверен полностью на synthetic PNG: дополнительное подтверждение,
+изменение размеров исходника, закрытие/новый Viewer и Undo с byte-exact восстановлением
+из private temporary recovery directory. Unix owner/mode/user-xattr сохраняются.
+External-change hash guard проверен, но последняя check→replace гонка остаётся.
+Никакие пользовательские оригиналы в тестах не изменялись.
+
+Native pixel test9000px проверяет чередующиеся source pixels без уменьшения;
+actual100% считает source dimensions, не8192 fit. LittleCMS sRGB roundtrip сохраняет
+alpha; invalid ICC не портит исходные pixels. Generated Bayer DNG64×64 без JPEG
+успешно проявлен установленным LibRaw. Library держится resident, вызовы сериализованы:
+параллельный unload системной native library в раннем прогоне привёл к SIGSEGV;
+после исправления полный набор и captures прошли. Это не приёмка всех RAW/ICC.
+
+GPU captures: `/tmp/opencode/rphotos-audit-captures`, библиотека/Reveal/task strips
+прошли, viewer повторён после исправления неверной тестовой подписи кнопки.
+`viewer-resize` и `viewer-overwrite` просмотрены. Native opt-dev smoke:
+`/tmp/opencode/rphotos-audit-smoke-lamqe2ak` — обе сцены по5с в isolated XDG,
+процессы закрыты. Реальные clipboard/print/share не вызывались.
+Новые Win/Mac adapters ещё требуют remote compilation/native acceptance.
+
 ## Результаты
 
 | Проверка | Результат |
 | --- | --- |
 | `cargo build --locked` | Успешно |
-| `cargo test --locked --all-targets` | 218 passed, 0 failed, 12 ignored |
+| `cargo test --locked --all-targets` | 233 passed, 0 failed, 12 ignored |
 | `cargo check --locked --all-features` | Успешно |
 | `cargo clippy --locked --all-targets --all-features --message-format short` | Успешно; 8 предупреждений в неизменённых upstream `decode`/`raw` |
 | `git diff --check` | Успешно |

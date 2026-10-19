@@ -47,6 +47,8 @@ pub struct Album {
 
 #[derive(Default, Debug)]
 pub struct Snapshot {
+    pub availability_verified: bool,
+    pub suggestions: Vec<String>,
     pub unavailable: HashSet<String>,
     pub directories: Vec<PathBuf>,
     pub favorites: HashSet<i64>,
@@ -104,15 +106,28 @@ pub fn connect(path: &Path) -> Result<Connection> {
     let db = Connection::open(path)?;
     db.busy_timeout(std::time::Duration::from_secs(3))?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version > 10 {
+    if version > 11 {
         bail!("Library database was created by a newer Rphotos version");
     }
     db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;")?;
     // Opening a migrated database must not start a schema write transaction:
     // readers and the owner worker can connect concurrently (SQLITE_BUSY_SNAPSHOT
     // cannot be repaired by busy_timeout after upgrading a deferred transaction).
-    if version == 10 {
+    if version == 11 {
         return Ok(db);
+    }
+    if version > 0 {
+        // One consistent, bounded pre-migration snapshot. VACUUM INTO includes
+        // committed WAL data, unlike copying only the main SQLite file.
+        let backup = path.with_extension(format!("before-v{version}.sqlite3"));
+        if !backup.exists() {
+            db.execute("VACUUM INTO ?", [backup.to_string_lossy().as_ref()])?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
     }
     db.execute_batch(
         "BEGIN IMMEDIATE;
@@ -147,8 +162,10 @@ pub fn connect(path: &Path) -> Result<Connection> {
          CREATE TABLE IF NOT EXISTS favorites(photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE);
          CREATE TABLE IF NOT EXISTS photo_embeddings(photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,cache_key TEXT NOT NULL,model TEXT NOT NULL,text_hash TEXT NOT NULL,vector BLOB NOT NULL);
          CREATE TABLE IF NOT EXISTS source_directories(source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,path BLOB NOT NULL,PRIMARY KEY(source_id,path));
-         CREATE TABLE IF NOT EXISTS photo_dates(photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,cache_key TEXT NOT NULL,taken INTEGER);
-         PRAGMA user_version=10; COMMIT;",
+          CREATE TABLE IF NOT EXISTS photo_dates(photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,cache_key TEXT NOT NULL,taken INTEGER);
+          CREATE TABLE IF NOT EXISTS file_identities(photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,identity TEXT NOT NULL);
+          CREATE INDEX IF NOT EXISTS file_identity_lookup ON file_identities(identity);
+          PRAGMA user_version=11; COMMIT;",
     )?;
     Ok(db)
 }
@@ -358,6 +375,8 @@ pub fn snapshot(db: &Connection) -> Result<Snapshot> {
         let (id,text)=row?;if let Some(&i)=positions.get(&id){photos[i].text.push('\n');photos[i].text.push_str(&text);}
     }
     Ok(Snapshot {
+        availability_verified: false,
+        suggestions: Vec::new(),
         unavailable: HashSet::new(),
         directories: db
             .prepare("SELECT DISTINCT path FROM source_directories ORDER BY path")?
@@ -631,7 +650,10 @@ pub fn scan(
     let mut warnings = Vec::new();
     let mut count = 0;
     for source in sources {
-        let tx = db.transaction()?;
+        // Filesystem traversal, EXIF reads and pause callbacks run without a
+        // SQLite write transaction. Apply the completed observation atomically
+        // afterwards so cancellation still preserves the last successful index.
+        let mut observed = Vec::new();
         let mut stack = vec![source.path.clone()];
         let mut seen = HashSet::new();
         let mut seen_directories = HashSet::new();
@@ -655,10 +677,6 @@ pub fn scan(
                 }
             };
             let bytes = path_bytes(&dir);
-            tx.execute(
-                "INSERT OR IGNORE INTO source_directories VALUES(?,?)",
-                params![source.id, bytes],
-            )?;
             seen_directories.insert(bytes);
             for entry in entries {
                 if generation.load(Ordering::Relaxed) != ticket {
@@ -685,34 +703,44 @@ pub fn scan(
                     let modified = metadata.modified()?;
                     let seconds = chrono::DateTime::<chrono::Utc>::from(modified).timestamp();
                     let key = cache_key(&path, metadata.len(), modified);
-                    tx.execute(
-                        "INSERT INTO photos(path,modified,cache_key) VALUES (?,?,?)
-                         ON CONFLICT(path) DO UPDATE SET modified=excluded.modified,cache_key=excluded.cache_key",
-                        params![path_bytes(&path), seconds, key],
-                    )?;
-                    let id: i64 = tx.query_row(
-                        "SELECT id FROM photos WHERE path=?",
-                        [path_bytes(&path)],
+                    let identity = file_identity(&path, &metadata);
+                    let mut renamed = None;
+                    if let Some(identity) = &identity {
+                        let existing: bool = db.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM photos WHERE path=?)",
+                            [path_bytes(&path)],
+                            |r| r.get(0),
+                        )?;
+                        if !existing {
+                            let candidates=db.prepare("SELECT p.id,p.path,p.cache_key FROM photos p JOIN file_identities f ON p.id=f.photo_id WHERE f.identity=?")?
+                                .query_map([&identity],|r|Ok((r.get::<_,i64>(0)?,bytes_path(r.get(1)?),r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                            // Never merge hard links/copies or guess when identity
+                            // is ambiguous. The old exact content key must match.
+                            if candidates.len() == 1 {
+                                let (id, old, old_key) = &candidates[0];
+                                if matches!(std::fs::symlink_metadata(old),Err(e) if e.kind()==std::io::ErrorKind::NotFound)
+                                    && cache_key(old, metadata.len(), modified) == *old_key
+                                {
+                                    renamed = Some((*id, old_key.clone()));
+                                }
+                            }
+                        }
+                    }
+                    let dated: bool = db.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM photo_dates d JOIN photos p ON p.id=d.photo_id WHERE p.path=? AND d.cache_key=?)",
+                        params![path_bytes(&path), key],
                         |r| r.get(0),
                     )?;
-                    let dated: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM photo_dates WHERE photo_id=? AND cache_key=?)",
-                        params![id, key],
-                        |r| r.get(0),
-                    )?;
-                    if !dated {
+                    let mut date = None;
+                    if !dated && renamed.is_none() {
                         let taken = super::facts::taken(&path);
                         // Ignore metadata read across a concurrent file replacement.
                         let current = std::fs::metadata(&path)?;
                         if cache_key(&path, current.len(), current.modified()?) == key {
-                            tx.execute("INSERT INTO photo_dates VALUES(?,?,?) ON CONFLICT(photo_id) DO UPDATE SET cache_key=excluded.cache_key,taken=excluded.taken", params![id, key, taken])?;
+                            date = Some(taken);
                         }
                     }
-                    tx.execute(
-                        "INSERT OR IGNORE INTO source_photos VALUES (?,?)",
-                        params![source.id, id],
-                    )?;
-                    seen.insert(id);
+                    observed.push((path, seconds, key, identity, renamed, date));
                     count += 1;
                     if count % 128 == 0 {
                         progress(count);
@@ -735,6 +763,60 @@ pub fn scan(
         }
         if generation.load(Ordering::Relaxed) != ticket {
             return Ok(warnings);
+        }
+        let tx = db.transaction()?;
+        if !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sources WHERE id=?)",
+            [source.id],
+            |r| r.get::<_, bool>(0),
+        )? {
+            continue;
+        }
+        for path in &seen_directories {
+            tx.execute(
+                "INSERT OR IGNORE INTO source_directories VALUES(?,?)",
+                params![source.id, path],
+            )?;
+        }
+        for (path, seconds, key, identity, renamed, date) in observed {
+            if generation.load(Ordering::Relaxed) != ticket {
+                return Ok(warnings);
+            }
+            if let Some((id, old_key)) = renamed {
+                tx.execute(
+                    "UPDATE photos SET path=?,cache_key=? WHERE id=? AND cache_key=?",
+                    params![path_bytes(&path), key, id, old_key],
+                )?;
+                for table in [
+                    "photo_dates",
+                    "photo_text",
+                    "photo_descriptions",
+                    "photo_embeddings",
+                ] {
+                    tx.execute(
+                        &format!("UPDATE {table} SET cache_key=? WHERE photo_id=? AND cache_key=?"),
+                        params![key, id, old_key],
+                    )?;
+                }
+                tx.execute("INSERT OR IGNORE INTO thumbnail_aspects SELECT ?,aspect FROM thumbnail_aspects WHERE cache_key=?",params![key,old_key])?;
+            }
+            tx.execute("INSERT INTO photos(path,modified,cache_key) VALUES (?,?,?) ON CONFLICT(path) DO UPDATE SET modified=excluded.modified,cache_key=excluded.cache_key",params![path_bytes(&path),seconds,key])?;
+            let id: i64 = tx.query_row(
+                "SELECT id FROM photos WHERE path=?",
+                [path_bytes(&path)],
+                |r| r.get(0),
+            )?;
+            if let Some(identity) = identity {
+                tx.execute("INSERT INTO file_identities VALUES(?,?) ON CONFLICT(photo_id) DO UPDATE SET identity=excluded.identity",params![id,identity])?;
+            }
+            if let Some(taken) = date {
+                tx.execute("INSERT INTO photo_dates VALUES(?,?,?) ON CONFLICT(photo_id) DO UPDATE SET cache_key=excluded.cache_key,taken=excluded.taken",params![id,key,taken])?;
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO source_photos VALUES(?,?)",
+                params![source.id, id],
+            )?;
+            seen.insert(id);
         }
         if complete {
             let old_directories = tx
@@ -768,8 +850,95 @@ pub fn scan(
     Ok(warnings)
 }
 
+fn file_identity(path: &Path, metadata: &std::fs::Metadata) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        Some(format!("{}:{}", metadata.dev(), metadata.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        let _ = metadata;
+        let file = std::fs::File::open(path).ok()?;
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return None;
+        }
+        Some(format!(
+            "{}:{}:{}",
+            info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paused_scan_observation_does_not_lock_interactive_writes_and_cancellation_rolls_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        for n in 0..130 {
+            std::fs::write(root.join(format!("{n}.png")), b"synthetic").unwrap();
+        }
+        let path = temp.path().join("data/index");
+        let mut db = connect(&path).unwrap();
+        add_source(&db, &root).unwrap();
+        let other = connect(&path).unwrap();
+        let generation = AtomicU64::new(1);
+        let mut written = false;
+        scan(&mut db, &generation, 1, |n| {
+            if n >= 128 && !written {
+                // This callback is the same point where the worker pauses a scan.
+                create_album(&other, "Interactive during traversal").unwrap();
+                written = true;
+                generation.store(2, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+        let state = snapshot(&db).unwrap();
+        assert!(written);
+        assert!(state.photos.is_empty());
+        assert_eq!(state.albums[0].name, "Interactive during traversal");
+    }
+
+    #[test]
+    fn rename_preserves_album_favorite_and_text_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let from = root.join("before.png");
+        std::fs::write(&from, b"synthetic").unwrap();
+        let mut db = connect(&temp.path().join("data/index")).unwrap();
+        add_source(&db, &root).unwrap();
+        let generation = AtomicU64::new(1);
+        scan(&mut db, &generation, 1, |_| {}).unwrap();
+        let state = snapshot(&db).unwrap();
+        let photo = &state.photos[0];
+        let album = create_album_with_photos(&mut db, "Keep", &[photo.id]).unwrap();
+        toggle_favorite(&db, photo.id).unwrap();
+        db.execute(
+            "INSERT INTO photo_text VALUES(?,?,?)",
+            params![photo.id, photo.key, "Привет"],
+        )
+        .unwrap();
+        let to = root.join("after.png");
+        std::fs::rename(&from, &to).unwrap();
+        scan(&mut db, &generation, 1, |_| {}).unwrap();
+        let state = snapshot(&db).unwrap();
+        assert_eq!(state.photos.len(), 1);
+        assert_eq!(state.photos[0].id, photo.id);
+        assert!(state.favorites.contains(&photo.id));
+        assert!(state.photos[0].albums.contains(&album));
+        assert_eq!(state.photos[0].text, "Привет");
+        assert_eq!(state.photos[0].path, to.canonicalize().unwrap());
+    }
+
     #[test]
     fn discovery_total_matches_scan_and_can_be_cancelled_without_changing_index() {
         let temp = tempfile::tempdir().unwrap();
@@ -1122,7 +1291,7 @@ fn album_lifecycle_migrates_preserves_originals_and_rolls_back() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
 }
 

@@ -328,6 +328,9 @@ pub struct App {
     bench: bench::BenchState,
     /// Outcome of the last trash move, painted briefly over the image.
     toast: Option<culling::Toast>,
+    trash_job: Option<culling::TrashJob>,
+    trash_errors:Vec<String>,
+    settings_error:Option<String>,
     /// Files waiting for the user to confirm a permanent delete (Windows
     /// locations without a Recycle Bin).
     pending_permanent_delete: Option<Vec<PathBuf>>,
@@ -387,6 +390,9 @@ impl App {
             preview_stale_since: None,
             bench: bench::BenchState::new(bench_opts, app_start),
             toast: None,
+            trash_job:None,
+            trash_errors:Vec::new(),
+            settings_error:None,
             pending_permanent_delete: None,
             metadata_panel: Default::default(),
             metadata_panel_rect: None,
@@ -782,6 +788,13 @@ impl App {
 impl eframe::App for App {
     fn clear_color(&self,_:&egui::Visuals)->[f32;4]{[0.0;4]}
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Do not terminate detached file workers halfway through an explicitly
+        // requested replacement/trash operation. A second close after completion
+        // works normally; no hidden "close later" action surprises the user.
+        if ctx.input(|i|i.viewport().close_requested()) && (self.viewer.saving_original() || self.trash_job.is_some()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_toast(self.settings.language.text("Дождитесь завершения операции с файлами перед закрытием.","Wait for the file operation to finish before closing.").into(),false);
+        }
         self.backdrop.update(ctx,self.library_visible,self.library.settings_visible());
         // Synchronize with the GPU before building the next frame.
         // Without this, wgpu's multi-stage pipeline (staging buffer → copy →

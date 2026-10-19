@@ -1,4 +1,4 @@
-//! Real compositor blur on KDE Wayland; other backends stay opaque.
+//! Compositor blur/vibrancy; unsupported backends stay opaque.
 //! Only the header is translucent. Never samples/captures other applications.
 use eframe::egui;
 
@@ -58,6 +58,8 @@ pub(crate) fn active(ctx: &egui::Context) -> bool {
 pub(crate) struct Backdrop {
     #[cfg(target_os = "linux")]
     wayland: Option<linux::Wayland>,
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    native: Option<native::Backdrop>,
 }
 
 impl Backdrop {
@@ -70,7 +72,13 @@ impl Backdrop {
                     .ok(),
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            Self {
+                native: native::Backdrop::new(cc),
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         {
             let _ = cc;
             Self::default()
@@ -88,13 +96,80 @@ impl Backdrop {
                     false
                 }
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            {
+                self.native
+                    .as_mut()
+                    .is_some_and(|native| native.update(ctx))
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
             {
                 let _ = height;
                 false
             }
         };
         ctx.data_mut(|d| d.insert_temp(egui::Id::new("rphotos.backdrop"), supported));
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+mod native {
+    use super::*;
+    use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
+    struct Handle(RawWindowHandle);
+    impl HasWindowHandle for Handle {
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            // The creation-context window outlives the App-owned backdrop.
+            Ok(unsafe { WindowHandle::borrow_raw(self.0) })
+        }
+    }
+    pub(super) struct Backdrop {
+        handle: Handle,
+        enabled: bool,
+        failed: bool,
+    }
+    impl Backdrop {
+        pub fn new(cc: &eframe::CreationContext<'_>) -> Option<Self> {
+            Some(Self {
+                handle: Handle(cc.window_handle().ok()?.as_raw()),
+                enabled: false,
+                failed: false,
+            })
+        }
+        pub fn update(&mut self, ctx: &egui::Context) -> bool {
+            if self.failed {
+                return false;
+            }
+            let enabled = !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            if self.enabled != enabled {
+                #[cfg(target_os = "windows")]
+                let result = if enabled {
+                    window_vibrancy::apply_blur(&self.handle, None)
+                } else {
+                    window_vibrancy::clear_blur(&self.handle)
+                };
+                #[cfg(target_os = "macos")]
+                let result = if enabled {
+                    window_vibrancy::apply_vibrancy(
+                        &self.handle,
+                        window_vibrancy::NSVisualEffectMaterial::HeaderView,
+                        Some(window_vibrancy::NSVisualEffectState::FollowsWindowActiveState),
+                        None,
+                    )
+                } else {
+                    window_vibrancy::clear_vibrancy(&self.handle).map(|_| ())
+                };
+                if let Err(error) = result {
+                    log::warn!("Opaque native backdrop fallback: {error}");
+                    self.failed = true;
+                    return false;
+                }
+                self.enabled = enabled;
+            }
+            // The native effect is behind the surface. Only the header's alpha
+            // reveals it: gallery/viewer content is always painted opaque.
+            self.enabled
+        }
     }
 }
 

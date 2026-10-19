@@ -8,7 +8,6 @@ impl Library {
             || self.semantic_zoom
             || self.popup_open_last_frame
             || self.has_dialog()
-            || ui.ctx().wants_keyboard_input()
             || self.filtered.is_empty()
         {
             return None;

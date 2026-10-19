@@ -51,6 +51,8 @@ impl Watch {
             let mut roots: Vec<PathBuf> = Vec::new();
             let mut pending = None;
             let mut first = None;
+            let mut failed = Vec::new();
+            let mut retry = Instant::now();
             loop {
                 match input.try_recv() {
                     Ok(next) => {
@@ -58,8 +60,10 @@ impl Watch {
                             let _ = watcher.unwatch(root);
                         }
                         roots = next;
+                        failed.clear();
                         for root in &roots {
                             if let Err(e) = watcher.watch(root, RecursiveMode::Recursive) {
+                                failed.push(root.clone());
                                 let _ = errors.try_send(format!("{}: {e}", root.display()));
                                 wake();
                             }
@@ -67,6 +71,26 @@ impl Watch {
                     }
                     Err(mpsc::TryRecvError::Disconnected) => break,
                     Err(mpsc::TryRecvError::Empty) => {}
+                }
+                if retry.elapsed() >= Duration::from_secs(2) {
+                    retry = Instant::now();
+                    // Detect disappearing roots too: some backends silently
+                    // discard registrations when a mount or directory goes away.
+                    for root in &roots {
+                        if !root.is_dir() && !failed.contains(root) {
+                            let _ = watcher.unwatch(root);
+                            failed.push(root.clone());
+                        }
+                    }
+                    failed.retain(|root| {
+                        if watcher.watch(root, RecursiveMode::Recursive).is_ok() {
+                            flag.store(true, Ordering::Relaxed);
+                            wake();
+                            false
+                        } else {
+                            true
+                        }
+                    });
                 }
                 match received.recv_timeout(Duration::from_millis(100)) {
                     Ok(()) => {
@@ -122,6 +146,28 @@ impl Watch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initially_missing_root_is_registered_when_it_returns() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("returning");
+        let mut watch = Watch::new(|| {});
+        watch.roots(vec![root.clone()]);
+        std::thread::sleep(Duration::from_millis(250));
+        std::fs::create_dir(&root).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !watch.take_dirty() {
+            assert!(Instant::now() < deadline, "root was never registered");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        std::fs::write(root.join("new.png"), b"fixture").unwrap();
+        while !watch.take_dirty() {
+            assert!(
+                Instant::now() < deadline,
+                "new root events were not delivered"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     #[test]
     fn native_watcher_reports_create_without_touching_original() {
         let temp = tempfile::tempdir().unwrap();

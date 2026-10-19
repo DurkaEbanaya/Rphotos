@@ -21,6 +21,7 @@ class PackagingTests(unittest.TestCase):
             "LICENSE-APACHE", "README.md", "docs/VERIFICATION.md", "docs/PREVIEW.md",
             "docs/UPSTREAM-README.md", "assets/rphotos.svg", "assets/rphotos.png",
             "docs/PRODUCT.md", "docs/IMPLEMENTATION.md", "docs/PHOTOS-2019.md",
+            "docs/AUDIT-FIXES.md",
             "docs/PHOTOS-2019-AUDIT.md", "docs/screenshots/README.md",
             "docs/screenshots/collection-light.png", "docs/screenshots/albums.png",
             "docs/screenshots/viewer-light.png",
@@ -64,7 +65,7 @@ class PackagingTests(unittest.TestCase):
                     with tarfile.open(archive) as out:
                         contents = {n: out.extractfile(n).read() for n in out.getnames()}
                 relative = {n.split("/", 1)[1] for n in contents}
-                self.assertEqual(len(relative), 22 if system == "Linux" else 21)
+                self.assertEqual(len(relative), 23 if system == "Linux" else 22)
                 self.assertIn("rphotos.exe" if system == "Windows" else "rphotos", relative)
                 self.assertNotIn("settings.yaml", relative)
                 self.assertFalse(any("private" in n or ".." in Path(n).parts for n in contents))

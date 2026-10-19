@@ -293,7 +293,7 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-fn read_original(path: &Path) -> Result<Vec<u8>> {
+pub(super) fn read_original(path: &Path) -> Result<Vec<u8>> {
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_file() || meta.file_type().is_symlink() {
         bail!("Choose a regular file, not a symbolic link");
@@ -338,7 +338,7 @@ fn read_original(path: &Path) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn replace(path: &Path, before: &[u8], after: &[u8]) -> Result<()> {
+pub(super) fn replace(path: &Path, before: &[u8], after: &[u8]) -> Result<()> {
     if after.len() as u64 > MAX_FILE {
         bail!("Edited photo exceeds the 128 MiB safety limit");
     }
@@ -348,8 +348,24 @@ fn replace(path: &Path, before: &[u8], after: &[u8]) -> Result<()> {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new(".")),
     )?;
-    staged.as_file().set_permissions(meta.permissions())?;
     staged.write_all(after)?;
+    #[cfg(unix)]
+    {
+        use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+        use xattr::FileExt;
+        let input = std::fs::File::open(path)?;
+        // Preserve ownership first: chown can clear mode bits/ACLs.
+        // SAFETY: staged owns this live descriptor; IDs are from source metadata.
+        if unsafe { libc::fchown(staged.as_file().as_raw_fd(), meta.uid(), meta.gid()) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        for name in input.list_xattr()? {
+            if let Some(value) = input.get_xattr(&name)? {
+                staged.as_file().set_xattr(&name, &value)?;
+            }
+        }
+    }
+    staged.as_file().set_permissions(meta.permissions())?;
     staged.as_file().sync_all()?;
     // Validate the complete staged container before replacing the original.
     crate::file_io::load_image(staged.path())
@@ -358,10 +374,49 @@ fn replace(path: &Path, before: &[u8], after: &[u8]) -> Result<()> {
     if read_original(path)? != before {
         bail!("Photo changed during editing; original was not replaced");
     }
+    // Recovery must be durable BEFORE replacing the original. A backup failure
+    // aborts the edit rather than leaving an irreversible successful save.
+    super::recovery::save(path, before, after)?;
+    if read_original(path)? != before {
+        bail!("Photo changed while saving recovery; original was not replaced");
+    }
+    #[cfg(not(target_os = "windows"))]
     staged
         .persist(path)
         .map_err(|e| e.error)
         .context("Cannot atomically replace photo")?;
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let destination = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let replacement = staged
+            .path()
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        // ReplaceFile preserves destination security/streams and fails closed if
+        // it cannot merge attributes; do not use IGNORE_MERGE_ERRORS.
+        if unsafe {
+            windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
+                destination.as_ptr(),
+                replacement.as_ptr(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    #[cfg(unix)]
+    std::fs::File::open(path.parent().unwrap_or(Path::new(".")))?.sync_all()?;
     Ok(())
 }
 
@@ -506,6 +561,36 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn original_owner_mode_and_user_xattrs_survive_edit_and_undo() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("photo.png");
+        image::RgbImage::new(6, 4).save(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        #[cfg(target_os = "linux")]
+        xattr::set(&path, "user.rphotos-test", b"retained").unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        let undo = apply(&path, Transform::Right).unwrap();
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            (after.uid(), after.gid(), after.mode()),
+            (before.uid(), before.gid(), before.mode())
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            xattr::get(&path, "user.rphotos-test").unwrap().unwrap(),
+            b"retained"
+        );
+        super::undo(undo).unwrap();
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            xattr::get(&path, "user.rphotos-test").unwrap().unwrap(),
+            b"retained"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn symlinks_and_hardlinks_cannot_redirect_atomic_edit() {
         use std::os::unix::fs::{symlink, PermissionsExt};
         let temp = tempfile::tempdir().unwrap();
@@ -594,13 +679,50 @@ pub(crate) struct Edits {
     pending: Option<mpsc::Receiver<EditResult>>,
     undo: Option<Undo>,
     pub error: Option<String>,
+    recovery_probe: Option<mpsc::Receiver<(PathBuf, bool)>>,
+    recovery_path: Option<(PathBuf, bool)>,
 }
 impl Edits {
+    pub fn invalidate_recovery(&mut self) {
+        self.recovery_path = None;
+    }
+    pub fn external_save_completed(&mut self) {
+        self.undo = None;
+        self.recovery_path = None;
+    }
     pub fn busy(&self) -> bool {
         self.pending.is_some()
     }
     pub fn can_undo(&self, path: &Path) -> bool {
-        self.undo.as_ref().is_some_and(|u| u.path == path) && !self.busy()
+        (self.undo.as_ref().is_some_and(|u| u.path == path)
+            || self
+                .recovery_path
+                .as_ref()
+                .is_some_and(|(p, ok)| p == path && *ok))
+            && !self.busy()
+    }
+    pub fn probe_recovery(&mut self, path: &Path, ctx: &eframe::egui::Context) {
+        if let Some(rx) = &self.recovery_probe {
+            if let Ok(result) = rx.try_recv() {
+                self.recovery_path = Some(result);
+                self.recovery_probe = None;
+            }
+        }
+        if self.busy()
+            || self.recovery_probe.is_some()
+            || self.recovery_path.as_ref().is_some_and(|(p, _)| p == path)
+        {
+            return;
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        let path = path.to_owned();
+        let ctx = ctx.clone();
+        self.recovery_probe = Some(rx);
+        std::thread::spawn(move || {
+            let ok = super::recovery::available(&path);
+            let _ = tx.send((path, ok));
+            ctx.request_repaint();
+        });
     }
     pub fn start(
         &mut self,
@@ -619,9 +741,6 @@ impl Edits {
         } else {
             None
         };
-        if transform.is_none() && undo.is_none() {
-            return;
-        }
         let (tx, rx) = mpsc::sync_channel(1);
         self.pending = Some(rx);
         let ctx = ctx.clone();
@@ -631,8 +750,12 @@ impl Edits {
                     apply(&path, t).map(|edit| (path, Some(edit)))
                 } else {
                     undo.map_or_else(
-                        || anyhow::bail!("No edit to undo"),
-                        |edit| super::edits::undo(edit).map(|()| (path, None)),
+                        || {
+                            let current = read_original(&path)?;
+                            let original = super::recovery::load(&path, &current)?;
+                            replace(&path, &current, &original).map(|()| (path.clone(), None))
+                        },
+                        |edit| super::edits::undo(edit).map(|()| (path.clone(), None)),
                     )
                 }
             })
@@ -649,6 +772,7 @@ impl Edits {
                 self.pending = None;
                 match result {
                     Ok((path, undo)) => {
+                        self.recovery_path = Some((path.clone(), undo.is_some()));
                         self.undo = undo;
                         Some(path)
                     }

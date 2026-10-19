@@ -34,6 +34,9 @@ struct Resize {
     linked: bool,
     quality: u8,
     jpeg: bool,
+    // Explicit confirmation is required; no file dialog can silently turn
+    // Save a copy into replacement of an original.
+    overwrite_confirm: bool,
 }
 
 #[cfg(test)]
@@ -80,6 +83,96 @@ mod tests {
                     Action::None,
                 ),
             )
+    }
+
+    #[test]
+    fn overwrite_requires_confirmation_and_remains_recoverable_after_reopening() {
+        let (_temp, pane) = fixture();
+        let path = pane.image_paths[0].clone();
+        let original = std::fs::read(&path).unwrap();
+        let mut h = harness(pane);
+        h.run_steps(3);
+        h.state_mut().0.resize = Some(Resize {
+            path: path.clone(),
+            original: [960, 600],
+            width: 480,
+            height: 300,
+            linked: true,
+            quality: 90,
+            jpeg: false,
+            overwrite_confirm: false,
+        });
+        h.run_steps(2);
+        h.get_by_label("Сохранить с перезаписью").click();
+        h.run_steps(2);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "first click must only request confirmation"
+        );
+        h.get_by_label("Подтвердить перезапись").click();
+        h.run_steps(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while h.state().0.jobs.busy() {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            h.state().0.jobs.message.is_none(),
+            "{:?}",
+            h.state().0.jobs.message
+        );
+        assert_eq!(image::image_dimensions(&path).unwrap(), (480, 300));
+        // A fresh viewer has no in-memory Undo. Recovery is discovered from disk.
+        h.state_mut().0 = Viewer::default();
+        while !h.state().0.edits.can_undo(&path) {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.state_mut().0.undo_requested = true;
+        h.run_steps(1);
+        while h.state().0.edits.busy() {
+            h.run_steps(2);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn keyboard_viewport_and_zoom_navigation_do_not_reenter_input_lock() {
+        let (_temp, pane) = fixture();
+        let mut h = harness(pane);
+        h.run_steps(3);
+        h.state_mut().0.zoom_open = true;
+        h.press_key(egui::Key::ArrowRight);
+        h.run_steps(1);
+        h.press_key(egui::Key::F11);
+        h.run_steps(1);
+        assert!(h.output().viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|c| matches!(c, egui::ViewportCommand::Fullscreen(true))));
+        h.input_mut()
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .fullscreen = Some(true);
+        h.press_key(egui::Key::Escape);
+        h.run_steps(1);
+        assert!(h.output().viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|c| matches!(c, egui::ViewportCommand::Fullscreen(false))));
+        h.state_mut().0.zoom_open = false;
+        h.press_key(egui::Key::End);
+        h.run_steps(1);
+        assert_eq!(h.state().1.current_index, 2);
+        h.press_key(egui::Key::Home);
+        h.run_steps(1);
+        assert_eq!(h.state().1.current_index, 0);
     }
 
     #[test]
@@ -581,6 +674,13 @@ mod tests {
                 Appearance::Light,
                 false,
             ),
+            (
+                "viewer-overwrite",
+                [1100.0, 850.0],
+                Language::Ru,
+                Appearance::Light,
+                false,
+            ),
         ] {
             let (_temp, mut pane) = fixture();
             if name == "viewer-rotated" {
@@ -643,14 +743,22 @@ mod tests {
                     | "viewer-narrow-menu"
                     | "viewer-resize"
                     | "viewer-resize-narrow"
+                    | "viewer-overwrite"
             ) {
                 h.get_by_label("…").click();
                 h.run_steps(3);
-                if matches!(name, "viewer-resize" | "viewer-resize-narrow") {
+                if matches!(
+                    name,
+                    "viewer-resize" | "viewer-resize-narrow" | "viewer-overwrite"
+                ) {
                     h.get_by_label("Изменить размер…").click();
                     h.run_steps(3);
                     h.get_by_label("50%").click();
                     h.run_steps(2);
+                    if name == "viewer-overwrite" {
+                        h.get_by_label("Сохранить с перезаписью").click();
+                        h.run_steps(2);
+                    }
                 }
             }
             h.render()
@@ -890,11 +998,15 @@ impl Viewer {
     pub fn modal_open(&self) -> bool {
         self.resize.is_some()
             || self.edits.busy()
+            || self.jobs.writing_original()
             || self.edits.error.is_some()
             || self.delete_path.is_some()
             || self.settings_open
             || self.share_open
             || self.jobs.message.is_some()
+    }
+    pub(crate) fn saving_original(&self) -> bool {
+        self.edits.busy() || self.jobs.writing_original()
     }
 
     pub fn show(
@@ -906,10 +1018,22 @@ impl Viewer {
     ) -> Action {
         let lang = settings.language;
         self.jobs.poll();
+        if let Some(path) = pane.image_paths.get(pane.current_index) {
+            self.edits.probe_recovery(path, ctx);
+        }
         let tokens = Tokens::new(settings.appearance, ctx);
         tokens.apply(ctx);
         let before = settings.clone();
-        let mut action = if let Some(path) = self.edits.poll() {
+        let transform = self.edits.poll();
+        let external = self.jobs.take_edited();
+        if external.is_some() {
+            self.edits.external_save_completed();
+        }
+        let edited = transform.or(external);
+        if edited.is_some() {
+            self.edits.invalidate_recovery();
+        }
+        let mut action = if let Some(path) = edited {
             pane.reload_edited(&path, ctx);
             Action::Edited(path)
         } else {
@@ -943,7 +1067,11 @@ impl Viewer {
         let overflow_was_open = std::mem::take(&mut self.overflow_open_last_frame);
         let text_input = ctx.wants_keyboard_input();
         if !disabled && !overflow_was_open && !ctx.memory(|m| m.any_popup_open()) {
-            ctx.input(|i| {
+            // Never call Context or Pane operations while holding egui's input
+            // lock (viewport commands and navigation may acquire it again).
+            let input = ctx.input(|i| i.clone());
+            {
+                let i = &input;
                 if i.key_pressed(egui::Key::Escape) {
                     if fullscreen {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -954,14 +1082,10 @@ impl Viewer {
                         action = Action::Back;
                     }
                 }
-                if i.key_pressed(egui::Key::ArrowRight)
-                    && !(self.zoom_open && ctx.wants_keyboard_input())
-                {
+                if i.key_pressed(egui::Key::ArrowRight) && !(self.zoom_open && text_input) {
                     direction = 1;
                 }
-                if i.key_pressed(egui::Key::ArrowLeft)
-                    && !(self.zoom_open && ctx.wants_keyboard_input())
-                {
+                if i.key_pressed(egui::Key::ArrowLeft) && !(self.zoom_open && text_input) {
                     direction = -1;
                 }
                 if i.key_pressed(egui::Key::Home) {
@@ -1026,7 +1150,7 @@ impl Viewer {
                         direction = if delta > 0.0 { -1 } else { 1 };
                     }
                 }
-            });
+            }
         }
 
         // Fullscreen has no commands; only the exit affordance remains over the image.
@@ -1230,6 +1354,7 @@ impl Viewer {
                                                     linked: true,
                                                     quality: 90,
                                                     jpeg: false,
+                                                    overwrite_confirm: false,
                                                 });
                                                 self.slideshow_at = None;
                                             }
@@ -1307,8 +1432,7 @@ impl Viewer {
                                         ] {
                                             if ui
                                                 .add_enabled(
-                                                    !self.jobs.busy()
-                                                        && (kind != 2 || cfg!(target_os = "linux")),
+                                                    !self.jobs.busy(),
                                                     egui::Button::new(label),
                                                 )
                                                 .clicked()
@@ -1640,9 +1764,16 @@ impl Viewer {
                 let valid=crate::platform::resize::Options{width:resize.width,height:resize.height,quality:resize.quality,jpeg:resize.jpeg}.validate().is_ok();
                 if !valid {ui.colored_label(egui::Color32::RED,lang.text("1–16384 px по стороне, не более48 мегапикселей","1–16384 px per side, at most48 megapixels"));}
                 let save=ui.add_enabled(valid&&!self.jobs.busy(),egui::Button::new(lang.text("Сохранить копию…","Save resized copy…"))).clicked();
-                let cancel=ui.button(lang.text("Отмена","Cancel")).clicked();(save,cancel)
+                let extension=resize.path.extension().unwrap_or_default().to_string_lossy().to_lowercase();
+                let same_format=if resize.jpeg {matches!(extension.as_str(),"jpg"|"jpeg")}else{extension=="png"};
+                let mut overwrite=false;
+                if resize.overwrite_confirm {
+                    ui.colored_label(tokens.accent,lang.text("Заменить исходный файл? Метаданные изображения будут удалены. Байты оригинала сохранятся для восстановления.","Replace the original? Image metadata will be removed. Original bytes are kept for recovery."));
+                    overwrite=ui.add_enabled(valid&&same_format&&!self.jobs.busy(),egui::Button::new(lang.text("Подтвердить перезапись","Confirm overwrite"))).clicked();
+                } else if ui.add_enabled(valid&&same_format&&!self.jobs.busy(),egui::Button::new(lang.text("Сохранить с перезаписью","Save and overwrite original"))).clicked(){resize.overwrite_confirm=true;}
+                let cancel=ui.button(lang.text("Отмена","Cancel")).clicked();(save,cancel,overwrite)
             });
-            if result.inner.0 {
+            if result.inner.0 || result.inner.2 {
                 let options = crate::platform::resize::Options {
                     width: resize.width,
                     height: resize.height,
@@ -1650,7 +1781,11 @@ impl Viewer {
                     jpeg: resize.jpeg,
                 };
                 self.jobs.start(
-                    crate::platform::jobs::Job::Resize(resize.path.clone(), options),
+                    if result.inner.2 {
+                        crate::platform::jobs::Job::Overwrite(resize.path.clone(), options)
+                    } else {
+                        crate::platform::jobs::Job::Resize(resize.path.clone(), options)
+                    },
                     ctx,
                 );
                 self.resize = None;
@@ -1737,6 +1872,24 @@ impl Viewer {
             let response = egui::Modal::new(egui::Id::new("share_photo")).show(ctx, |ui| {
                 ui.set_max_width(360.0);
                 ui.heading(lang.text("Поделиться", "Share"));
+                if crate::platform::sharing::supported()
+                    && ui
+                        .add_enabled(
+                            !self.jobs.busy(),
+                            egui::Button::new(
+                                lang.text("Системное меню «Поделиться»…", "System Share…"),
+                            ),
+                        )
+                        .clicked()
+                {
+                    if let Some(path) = pane.image_paths.get(pane.current_index) {
+                        if let Err(error) =
+                            crate::platform::sharing::show(ctx, std::slice::from_ref(path))
+                        {
+                            self.jobs.message = Some(format!("{error:#}"));
+                        }
+                    }
+                }
                 ui.label(lang.text(
                     "Файл не отправляется автоматически. Выберите действие.",
                     "Nothing is sent automatically. Choose an action.",
@@ -1781,9 +1934,8 @@ impl Viewer {
                         .start(crate::platform::jobs::Job::Export(vec![path.clone()]), ctx);
                 }
                 if response.inner.2 {
-                    if let Some(parent) = path.parent() {
-                        crate::file_io::open_in_file_explorer(&parent.to_string_lossy());
-                    }
+                    self.jobs
+                        .start(crate::platform::jobs::Job::Reveal(path.clone()), ctx);
                 }
                 if response.inner.4 {
                     self.jobs

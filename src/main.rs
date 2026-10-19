@@ -19,6 +19,7 @@ mod bench;
 mod build_info;
 mod cache;
 mod decode;
+mod detail;
 mod file_io;
 mod identity;
 mod library;
@@ -173,6 +174,7 @@ fn main() -> eframe::Result {
         identity::APP_ID,
         options,
         Box::new(move |cc| {
+            platform::sharing::install(cc);
             #[cfg(target_os = "macos")]
             platform::macos::register_file_handler();
             Ok(Box::new(app::App::new(

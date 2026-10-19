@@ -212,6 +212,15 @@ impl Library {
                             let rect = Rect::from_min_size(pos2(origin.x, y), vec2(width, 30.0));
                             let response =
                                 ui.interact(rect, ui.id().with(("month", &m.key)), Sense::click());
+                            let text = ui.painter().layout_no_wrap(
+                                label.clone(),
+                                egui::FontId::proportional(22.0),
+                                t.accent,
+                            );
+                            crate::reveal::bounds(
+                                &response,
+                                Rect::from_min_size(rect.min, text.size() + vec2(0.0, 8.0)),
+                            );
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(
                                     egui::WidgetType::Button,

@@ -28,6 +28,7 @@ def package(root, profile, output):
         "LICENSE-MIT", "LICENSE-APACHE", "README.md", "docs/VERIFICATION.md", "docs/PREVIEW.md",
         "docs/UPSTREAM-README.md", "assets/rphotos.svg", "assets/rphotos.png",
         "docs/PRODUCT.md", "docs/IMPLEMENTATION.md", "docs/PHOTOS-2019.md",
+        "docs/AUDIT-FIXES.md",
         "docs/PHOTOS-2019-AUDIT.md", "docs/screenshots/README.md",
         "docs/screenshots/collection-light.png", "docs/screenshots/albums.png",
         "docs/screenshots/viewer-light.png",

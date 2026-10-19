@@ -174,7 +174,15 @@ pub(super) fn overflow(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
                     ui.set_width(160.0);
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                     ui.spacing_mut().interact_size.y = 32.0;
-                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), add);
+                    egui::ScrollArea::vertical()
+                        .id_salt("overflow_scroll")
+                        .max_height(
+                            (ui.ctx().screen_rect().bottom() - response.rect.bottom() - 16.0)
+                                .max(80.0),
+                        )
+                        .show(ui, |ui| {
+                            ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), add)
+                        });
                 });
         });
     // The Area's outer click-and-drag response is a popup container, not

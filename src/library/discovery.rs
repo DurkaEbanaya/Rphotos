@@ -12,23 +12,27 @@ pub(super) struct Discovery {
 
 impl Discovery {
     pub fn rebuild(&mut self, snapshot: &Snapshot) {
-        let mut counts = BTreeMap::<String, usize>::new();
-        // A bounded vocabulary, built on snapshot changes, not each UI frame.
-        for photo in &snapshot.photos {
-            for word in photo.text.split(|c: char| !c.is_alphanumeric()).take(256) {
-                let word = word.to_lowercase();
-                if word.chars().count() >= 4
-                    && word.chars().count() <= 32
-                    && (counts.len() < 4096 || counts.contains_key(&word))
-                {
-                    *counts.entry(word).or_default() += 1;
-                }
+        self.terms = snapshot.suggestions.clone();
+    }
+}
+
+pub(super) fn suggestions(snapshot: &Snapshot) -> Vec<String> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    // A bounded vocabulary, built on snapshot changes, not each UI frame.
+    for photo in &snapshot.photos {
+        for word in photo.text.split(|c: char| !c.is_alphanumeric()).take(256) {
+            let word = word.to_lowercase();
+            if word.chars().count() >= 4
+                && word.chars().count() <= 32
+                && (counts.len() < 4096 || counts.contains_key(&word))
+            {
+                *counts.entry(word).or_default() += 1;
             }
         }
-        let mut terms: Vec<_> = counts.into_iter().collect();
-        terms.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        self.terms = terms.into_iter().take(24).map(|(word, _)| word).collect();
     }
+    let mut terms: Vec<_> = counts.into_iter().collect();
+    terms.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    terms.into_iter().take(24).map(|(word, _)| word).collect()
 }
 
 impl Library {
@@ -108,6 +112,7 @@ impl Library {
                         }
                     });
             });
+        crate::reveal::ignore(&output.response);
         // Prevent the same click reaching a thumbnail under this foreground area.
         self.popup_open_last_frame = true;
         if let Some(query) = chosen {
@@ -242,6 +247,7 @@ mod tests {
             albums: vec![],
             text: "Кошка кошка grass GRASS x 123".into(),
         });
+        snapshot.suggestions = suggestions(&snapshot);
         let mut d = Discovery::default();
         d.rebuild(&snapshot);
         assert_eq!(d.terms, vec!["grass", "кошка"]);

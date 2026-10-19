@@ -94,9 +94,26 @@ impl Thumbnails {
     pub(super) fn take_availability_changed(&mut self) -> bool {
         std::mem::take(&mut self.availability_changed)
     }
-    pub(super) fn restore_availability(&mut self, photos: &[Photo], unavailable: &HashSet<String>) {
+    pub(super) fn restore_snapshot_availability(
+        &mut self,
+        photos: &[Photo],
+        unavailable: &HashSet<String>,
+        verified: bool,
+    ) {
         for photo in photos {
+            // A favorite/album mutation has no fresh filesystem information.
+            // Preserve a newer live probe instead of resurrecting offline files.
+            if !verified && self.availability.contains_key(&photo.key) {
+                continue;
+            }
             let available = !unavailable.contains(&photo.key);
+            if self
+                .availability
+                .get(&photo.key)
+                .is_none_or(|(ok, _)| *ok != available)
+            {
+                self.availability_changed = true;
+            }
             self.availability
                 .insert(photo.key.clone(), (available, std::time::Instant::now()));
             if available {
@@ -105,7 +122,6 @@ impl Thumbnails {
                 self.offline.insert(photo.key.clone(), photo.path.clone());
             }
         }
-        self.availability_changed = true;
     }
 
     // Called after the current viewport plan, before painting its photos.
@@ -333,8 +349,12 @@ impl Thumbnails {
     pub(super) fn bulk_status(&self) -> super::thumbnail_jobs::BulkStatus {
         self.jobs.bulk_status()
     }
+    #[cfg(test)]
     pub(super) fn failures(&self) -> Vec<super::thumbnail_jobs::Failure> {
         self.jobs.failures()
+    }
+    pub(super) fn failure_page(&self, page: usize) -> (usize, Vec<super::thumbnail_jobs::Failure>) {
+        self.jobs.failure_page(page)
     }
     pub(super) fn dismiss_bulk(&self) {
         self.jobs.dismiss_bulk();

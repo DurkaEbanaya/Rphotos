@@ -289,7 +289,6 @@ impl Library {
     fn send(&mut self, command: Command) {
         if let Err(error) = self.worker.send(command) {
             self.error = Some(error.into());
-            self.scanning = false;
         }
     }
 
@@ -314,6 +313,10 @@ impl Library {
                 self.catalog.notice = Some(id);
             }
             if let Some(state) = update.snapshot {
+                self.catalog.derived = None;
+                if let Some(picker) = &mut self.catalog.picker {
+                    picker.invalidate();
+                }
                 self.invalidate_pager_preview();
                 self.watcher
                     .roots(state.sources.iter().map(|s| s.path.clone()).collect());
@@ -323,8 +326,11 @@ impl Library {
                 }
                 self.content_search.hits = None;
                 self.state = state;
-                self.thumbnails
-                    .restore_availability(&self.state.photos, &self.state.unavailable);
+                self.thumbnails.restore_snapshot_availability(
+                    &self.state.photos,
+                    &self.state.unavailable,
+                    self.state.availability_verified,
+                );
                 self.thumbnails.restore_aspects(&self.state.aspects);
                 self.discovery.rebuild(&self.state);
                 self.thumbnails
@@ -367,14 +373,20 @@ impl Library {
         }
         self.thumbnails.poll(ctx);
         if self.thumbnails.take_availability_changed() {
+            self.catalog.derived = None;
+            if let Some(picker) = &mut self.catalog.picker {
+                picker.invalidate();
+            }
             self.layout_key = None;
             self.invalidate_pager_preview();
-            self.selection.retain(|id| {
-                self.state
-                    .photos
-                    .iter()
-                    .any(|p| p.id == *id && !self.thumbnails.unavailable(p))
-            });
+            let available: HashSet<_> = self
+                .state
+                .photos
+                .iter()
+                .filter(|p| !self.thumbnails.unavailable(p))
+                .map(|p| p.id)
+                .collect();
+            self.selection.retain(|id| available.contains(id));
         }
         self.thumbnails.persist_aspects(&self.worker);
         if self.watcher.take_dirty() {
@@ -1483,6 +1495,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         harness.run_steps(3);
+        harness.get_by_label("Фото-00.png").focus();
+        harness.run_steps(2);
+        assert!(
+            harness.ctx.wants_keyboard_input(),
+            "real thumbnail focus must not disable grid navigation"
+        );
         harness.press_key(egui::Key::End);
         harness.run_steps(2);
         let id = harness.state().0.state.photos[17].id;

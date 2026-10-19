@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use crate::menu::toggle_switch;
 use crate::theme::UiTheme;
 
+static SETTINGS_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub(crate) fn take_error()->Option<String> {SETTINGS_ERROR.lock().unwrap_or_else(|e|e.into_inner()).take()}
+
 /// Custom slider with accent-colored handle and two-tone rail.
 ///
 /// egui's built-in Slider ties the idle handle color to the rail
@@ -464,31 +467,67 @@ impl AppSettings {
     }
 
     pub fn load() -> Self {
-        let settings = Self::config_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_yaml::from_str(&s).ok())
-            .unwrap_or_default();
+        let settings = Self::config_path().map(|p| Self::load_from(&p)).unwrap_or_default();
         log::debug!("Loaded settings: {:?}", settings);
         settings
     }
 
     pub fn save(&self) {
         if let Some(path) = Self::config_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match serde_yaml::to_string(self) {
-                Ok(yaml) => {
-                    if let Err(e) = std::fs::write(&path, yaml) {
-                        log::error!("Failed to save settings to {}: {}", path.display(), e);
-                    } else {
-                        log::debug!("Settings saved to {}", path.display());
-                    }
-                }
-                Err(e) => log::error!("Failed to serialize settings: {}", e),
+            if let Err(e)=self.save_to(&path) {
+                log::error!("Failed to save settings to {}: {e:#}",path.display());
+                *SETTINGS_ERROR.lock().unwrap_or_else(|e|e.into_inner())=Some(format!("{}: {e:#}",path.display()));
             }
         }
     }
+
+    fn load_from(path: &std::path::Path) -> Self {
+        let text=match std::fs::read_to_string(path) {
+            Ok(text)=>text,
+            Err(e)=>{if e.kind()!=std::io::ErrorKind::NotFound {log::error!("Cannot read settings: {e}");} return Self::default();}
+        };
+        match serde_yaml::from_str(&text) {
+            Ok(settings)=>settings,
+            Err(e)=>{
+                // Preserve evidence rather than silently destroying a bad file
+                // on the next preference change. Never overwrite an old backup.
+                if let Some(parent)=path.parent() {
+                    if let Ok(mut backup)=tempfile::Builder::new().prefix("settings-corrupt-").suffix(".yaml").tempfile_in(parent) {
+                        use std::io::Write;
+                        if backup.write_all(text.as_bytes()).and_then(|_|backup.as_file().sync_all()).is_ok() {let _=backup.keep();}
+                    }
+                }
+                log::error!("Invalid settings; preserved a corrupt-file backup: {e}");
+                *SETTINGS_ERROR.lock().unwrap_or_else(|e|e.into_inner())=Some(format!("Invalid settings; defaults loaded. Original preserved: {e}"));
+                Self::default()
+            }
+        }
+    }
+
+    fn save_to(&self,path:&std::path::Path)->anyhow::Result<()> {
+        use std::io::Write;
+        let parent=path.parent().filter(|p|!p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut temporary=tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(serde_yaml::to_string(self)?.as_bytes())?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|e|e.error)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn settings_atomic_save_and_corrupt_file_preservation() {
+    let temp=tempfile::tempdir().unwrap();let path=temp.path().join("settings.yaml");
+    let settings=AppSettings{language:crate::library::Language::En,..Default::default()};
+    settings.save_to(&path).unwrap();assert_eq!(AppSettings::load_from(&path).language,crate::library::Language::En);
+    std::fs::write(&path,b"language: [broken").unwrap();let _=AppSettings::load_from(&path);
+    settings.save_to(&path).unwrap();
+    let backups=std::fs::read_dir(temp.path()).unwrap().filter_map(Result::ok).filter(|e|e.file_name().to_string_lossy().starts_with("settings-corrupt-")).collect::<Vec<_>>();
+    assert_eq!(backups.len(),1);assert_eq!(std::fs::read(backups[0].path()).unwrap(),b"language: [broken");
 }
 
 /// Show the settings modal and report which settings changed.

@@ -411,8 +411,22 @@ impl Jobs {
         self.shared.wake.notify_all();
         ready
     }
+    #[cfg(test)]
     pub fn failures(&self) -> Vec<Failure> {
         self.shared.queue.lock().unwrap().failures.clone()
+    }
+    pub fn failure_page(&self, page: usize) -> (usize, Vec<Failure>) {
+        let queue = self.shared.queue.lock().unwrap();
+        (
+            queue.failures.len(),
+            queue
+                .failures
+                .iter()
+                .skip(page.saturating_mul(50))
+                .take(50)
+                .cloned()
+                .collect(),
+        )
     }
     pub fn build_all(&self, requests: Vec<Request>) {
         let mut q = self.shared.queue.lock().unwrap();

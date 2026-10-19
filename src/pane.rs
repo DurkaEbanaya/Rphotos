@@ -61,6 +61,8 @@ pub(crate) struct Pane {
     sync_load_times: Option<(Vec<crate::bench::slider::SyncLoadTiming>, usize)>,
     swipe: Option<isize>,
     touch_drag: egui::Vec2,
+    opening: Option<std::sync::mpsc::Receiver<(Vec<PathBuf>,usize)>>,
+    detail:Option<crate::detail::Detail>,
 }
 
 impl Pane {
@@ -99,10 +101,14 @@ impl Pane {
             sync_load_times: None,
             swipe: None,
             touch_drag: egui::Vec2::ZERO,
+            opening:None,
+            detail:None,
         }
     }
 
     pub(crate) fn close(&mut self) {
+        self.opening=None;
+        self.detail=None;
         self.swipe = None;
         self.touch_drag = egui::Vec2::ZERO;
         self.image_paths.clear();
@@ -124,39 +130,15 @@ impl Pane {
         ctx: &egui::Context,
         discovery_options: ImageDiscoveryOptions,
     ) {
-        if !path.exists() {
-            log::error!("Path does not exist: {}", path.display());
-            return;
-        }
-
-        let (dir, target_filename) = file_io::resolve_path(path);
-        self.image_paths = file_io::enumerate_images(&dir, discovery_options);
-
-        if self.image_paths.is_empty() {
-            log::warn!("No supported images found in {}", dir.display());
-            return;
-        }
-        self.dir_path = Some(dir);
-
-        self.current_index = target_filename
-            .and_then(|name| {
-                self.image_paths.iter().position(|p| {
-                    p.file_name().map(|f| f.to_string_lossy().into_owned()) == Some(name.clone())
-                })
-            })
-            .unwrap_or(0);
-
-        self.zoom = 1.0;
-        self.pan = egui::Vec2::ZERO;
-        self.decode_cache.clear();
-        self.animation = None;
-
-        let mut c = cache::SlidingWindowCache::new(ctx, self.cache_count, self.decode_threads);
-        let record = c.initialize(self.current_index, &self.image_paths);
-        self.show_sync_result(c.loaded_for(self.current_index), record, ctx);
-        self.cache = Some(c);
-        self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx, self.preview_budget_mb));
-        self.slider_loader = Some(cache::SliderLoader::new(ctx));
+        self.close();
+        let path=path.to_owned();let wake=ctx.clone();
+        let (tx,rx)=std::sync::mpsc::sync_channel(1);self.opening=Some(rx);
+        std::thread::spawn(move|| {
+            let (dir,target)=file_io::resolve_path(&path);
+            let paths=file_io::enumerate_images(&dir,discovery_options);
+            let index=target.and_then(|name|paths.iter().position(|p|p.file_name().is_some_and(|f|f.to_string_lossy()==name))).unwrap_or(0);
+            let _=tx.send((paths,index));wake.request_repaint();
+        });
     }
 
     /// Open the library's filtered order without decoding on the UI thread.
@@ -260,7 +242,8 @@ impl Pane {
     pub(crate) fn actual_size(&mut self, rect: egui::Rect, pixels_per_point: f32) {
         if let Some(texture) = &self.current_texture {
             let size = texture.size_vec2();
-            self.set_zoom(1.0 / ((rect.width() / size.x).min(rect.height() / size.y) * pixels_per_point));
+            let source=self.current_record.as_ref().and_then(|r|r.dimensions).map(|s|egui::vec2(s[0] as f32,s[1] as f32)).unwrap_or(size);
+            self.set_zoom(1.0 / ((rect.width() / source.x).min(rect.height() / source.y) * pixels_per_point));
         }
     }
 
@@ -424,6 +407,7 @@ impl Pane {
     }
 
     pub(crate) fn is_settled(&self) -> bool {
+        if self.opening.is_some(){return false;}
         self.cache.as_ref().is_none_or(|c| c.is_settled())
     }
 
@@ -435,6 +419,13 @@ impl Pane {
     }
 
     pub(crate) fn poll_cache(&mut self) {
+        if let Some(rx)=&self.opening {
+            match rx.try_recv() {
+                Ok((paths,index))=>{let ctx=self.decode_cache.context().clone();self.opening=None;self.open_library(paths,index,&ctx);}
+                Err(std::sync::mpsc::TryRecvError::Disconnected)=>self.opening=None,
+                _=>{}
+            }
+        }
         if let Some(cache) = &mut self.cache {
             cache.poll(&self.image_paths);
         }
@@ -458,6 +449,7 @@ impl Pane {
     ///
     /// `trasher` is injected so the list bookkeeping can be tested without
     /// touching a real trash; the app passes `trash_bin::move_to_trash`.
+    #[cfg(test)]
     pub(crate) fn remove_current<E>(
         &mut self,
         ctx: &egui::Context,
@@ -514,7 +506,7 @@ impl Pane {
             .and_then(|c| c.decoded_for(self.current_index));
         match cached {
             Some(decoded) => self.show_decoded(decoded, ctx),
-            None => self.load_sync(ctx),
+            None => {self.open_library(self.image_paths.clone(),self.current_index,ctx);},
         }
     }
 
@@ -721,21 +713,6 @@ impl Pane {
         self.start_animation(ctx);
     }
 
-    /// After the cache decoded the centre image synchronously: show it,
-    /// or when its pixels failed, keep the record it produced.
-    fn show_sync_result(
-        &mut self,
-        loaded: Option<Loaded>,
-        record: Option<Arc<MetadataRecord>>,
-        ctx: &egui::Context,
-    ) {
-        match (loaded, record) {
-            (Some(loaded), _) => self.set_current(Some(loaded), ctx),
-            (None, Some(record)) => self.set_current_failed(record, ctx),
-            (None, None) => self.set_current(None, ctx),
-        }
-    }
-
     fn start_animation(&mut self, ctx: &egui::Context) {
         self.animation = self
             .image_paths
@@ -812,7 +789,8 @@ impl Pane {
             let is_fit_to_screen = (self.zoom - 1.0).abs() < f32::EPSILON;
 
             let (target_zoom, target_pan) = if is_fit_to_screen {
-                let actual_size_zoom = 1.0 / (scale * ui.ctx().pixels_per_point());
+                let ratio=self.current_record.as_ref().and_then(|r|r.dimensions).map(|s|s[0] as f32/tex_size.x).unwrap_or(1.0);
+                let actual_size_zoom = ratio / (scale * ui.ctx().pixels_per_point());
                 if actual_size_zoom >= 1.0 {
                     // Larger than the pane: 1:1 anchored at the click.
                     self.zoom_target(actual_size_zoom / self.zoom, click_pos, &available)
@@ -845,6 +823,11 @@ impl Pane {
         let painter = ui.painter_at(available);
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         painter.image(tex.id(), display_rect, uv, egui::Color32::WHITE);
+        if let (Some(path),Some(dimensions))=(self.image_paths.get(self.current_index),self.current_record.as_ref().and_then(|r|r.dimensions)) {
+            if (dimensions[0]>8192||dimensions[1]>8192)&&display_size.x*ui.ctx().pixels_per_point()>tex_size.x*1.1 {
+                self.detail.get_or_insert_with(||crate::detail::Detail::new(ui.ctx())).paint(ui,path,dimensions,display_rect,available);
+            } else {self.detail=None;}
+        }
 
         self.zoom != old_zoom || self.pan != old_pan
     }

@@ -56,6 +56,14 @@ sha2 = "0.10"
 tempfile = "3"
 base64 = "0.22"
 notify = "8.2"
+lcms2 = { version = "6.2", features = ["static"] }
+libloading = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+xattr = "1"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+window-vibrancy = "=0.6.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.11.1", default-features = false, features = ["async-std"] }
@@ -67,7 +75,9 @@ wayland-protocols-plasma = { version = "0.3.11", features = ["client"] }
 wayland-protocols = { version = "0.32.11", features = ["client", "staging"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
+windows = { version = "=0.58.0", features = ["ApplicationModel_DataTransfer", "Foundation_Collections", "Storage", "Win32_UI_Shell", "Win32_System_WinRT"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_WindowsProgramming", "Win32_UI_Shell", "Win32_System_Com", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi"] }
+raw-window-handle = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
@@ -87,6 +97,7 @@ objc2-app-kit = { version = "0.2", features = [
     "NSResponder",
     "NSView",
     "NSWindow",
+    "NSSharingService",
 ] }
 raw-window-handle = "0.6"
 

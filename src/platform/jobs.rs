@@ -4,6 +4,7 @@ use eframe::egui;
 use std::{path::PathBuf, sync::mpsc};
 
 pub(crate) enum Job {
+    Overwrite(PathBuf, super::resize::Options),
     Resize(PathBuf, super::resize::Options),
     SaveCopy(PathBuf),
     OpenWith(PathBuf),
@@ -18,6 +19,8 @@ pub(crate) enum Job {
 pub(crate) struct Jobs {
     result: Option<mpsc::Receiver<Result<(), String>>>,
     pub message: Option<String>,
+    edited: Option<PathBuf>,
+    started: Option<std::time::Instant>,
 }
 
 impl Jobs {
@@ -25,6 +28,9 @@ impl Jobs {
         let response=egui::Modal::new(egui::Id::new("library_share")).show(ctx,|ui|{
             ui.set_max_width(360.0);ui.heading(lang.text("Поделиться","Share"));
             ui.label(lang.text("Действия Rphotos. Это не системный Share-флайаут; файлы не отправляются автоматически.","Rphotos actions, not the system Share flyout. Nothing is sent automatically."));
+            if super::sharing::supported() && ui.add_enabled(!self.busy(),egui::Button::new(lang.text("Системное меню «Поделиться»…","System Share…"))).clicked() {
+                if let Err(error)=super::sharing::show(ctx,paths){self.message=Some(format!("{error:#}"));}
+            }
             let email=ui.add_enabled(cfg!(target_os="linux")&&!self.busy(),egui::Button::new(lang.text("Черновик письма с вложениями","Email attachment draft"))).clicked();
             let export=ui.add_enabled(!self.busy(),egui::Button::new(lang.text("Сохранить PDF…","Save PDF…"))).clicked();
             let copy=ui.add_enabled(!self.busy(),egui::Button::new(lang.text("Копировать файлы","Copy files"))).clicked();
@@ -48,12 +54,20 @@ impl Jobs {
     pub fn busy(&self) -> bool {
         self.result.is_some()
     }
+    pub fn writing_original(&self) -> bool {
+        self.result.is_some() && self.edited.is_some()
+    }
     pub fn start(&mut self, job: Job, ctx: &egui::Context) {
         if self.busy() {
             return;
         }
         let (tx, rx) = mpsc::sync_channel(1);
         let wake = ctx.clone();
+        let edited = if let Job::Overwrite(path, _) = &job {
+            Some(path.clone())
+        } else {
+            None
+        };
         #[cfg(target_os = "macos")]
         let output = match &job {
             Job::Export(_) => Some(
@@ -63,17 +77,20 @@ impl Jobs {
                     .save_file(),
             ),
             Job::SaveCopy(path) => Some(copy_dialog(path)),
-            Job::Resize(path,options) => Some(resize_dialog(path,*options)),
+            Job::Resize(path, options) => Some(resize_dialog(path, *options)),
             _ => None,
         };
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(|| match job {
-                Job::Resize(path,options) => {
-                    #[cfg(not(target_os="macos"))]
-                    let output=resize_dialog(&path,options);
-                    #[cfg(target_os="macos")]
-                    let output=output.flatten();
-                    output.map_or(Ok(()),|destination|super::resize::save(&path,&destination,options))
+                Job::Overwrite(path, options) => super::resize::overwrite(&path, options),
+                Job::Resize(path, options) => {
+                    #[cfg(not(target_os = "macos"))]
+                    let output = resize_dialog(&path, options);
+                    #[cfg(target_os = "macos")]
+                    let output = output.flatten();
+                    output.map_or(Ok(()), |destination| {
+                        super::resize::save(&path, &destination, options)
+                    })
                 }
                 Job::SaveCopy(path) => {
                     #[cfg(not(target_os = "macos"))]
@@ -110,16 +127,29 @@ impl Jobs {
             wake.request_repaint();
         });
         self.result = Some(rx);
+        self.edited = edited;
+        self.started = Some(std::time::Instant::now());
+    }
+    pub fn take_edited(&mut self) -> Option<PathBuf> {
+        if self.result.is_none() && self.message.is_none() {
+            self.edited.take()
+        } else {
+            None
+        }
     }
     pub fn poll(&mut self) {
         if let Some(rx) = &self.result {
             match rx.try_recv() {
                 Ok(result) => {
                     self.result = None;
+                    if result.is_err() {
+                        self.edited = None;
+                    }
                     self.message = result.err();
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.result = None;
+                    self.edited = None;
                     self.message = Some("Integration worker disconnected".into());
                 }
                 _ => {}
@@ -128,6 +158,32 @@ impl Jobs {
     }
     pub fn show(&mut self, ctx: &egui::Context, lang: Language) {
         self.poll();
+        if self.busy() {
+            egui::Area::new(egui::Id::new("integration_pending"))
+                .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -24.0])
+                .show(ctx, |ui| {
+                    let seconds = self.started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+                    ui.label(format!(
+                        "{} · {}s",
+                        lang.text(
+                            "Ожидание системной операции…",
+                            "Waiting for system operation…"
+                        ),
+                        seconds
+                    ));
+                    // Abandoning an OS dialog does not terminate another app or
+                    // claim cancellation of an operation already submitted to it.
+                    if self.edited.is_none()
+                        && ui
+                            .button(lang.text("Не ждать ответ", "Stop waiting for response"))
+                            .clicked()
+                    {
+                        self.result = None;
+                        self.started = None;
+                    }
+                });
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if let Some(message) = self.message.clone() {
             let response = egui::Modal::new(egui::Id::new("integration_error")).show(ctx, |ui| {
                 ui.set_max_width(440.0);
@@ -153,11 +209,16 @@ fn copy_dialog(path: &std::path::Path) -> Option<PathBuf> {
     rfd::FileDialog::new().set_file_name(suggested).save_file()
 }
 
-fn resize_dialog(path: &std::path::Path,options: super::resize::Options) -> Option<PathBuf> {
-    let name=path.file_stem().unwrap_or_default().to_string_lossy();
-    let extension=if options.jpeg {"jpg"}else{"png"};
-    rfd::FileDialog::new().add_filter(if options.jpeg {"JPEG"}else{"PNG"},&[extension])
-        .set_file_name(format!("{name}-{}x{}.{extension}",options.width,options.height)).save_file()
+fn resize_dialog(path: &std::path::Path, options: super::resize::Options) -> Option<PathBuf> {
+    let name = path.file_stem().unwrap_or_default().to_string_lossy();
+    let extension = if options.jpeg { "jpg" } else { "png" };
+    rfd::FileDialog::new()
+        .add_filter(if options.jpeg { "JPEG" } else { "PNG" }, &[extension])
+        .set_file_name(format!(
+            "{name}-{}x{}.{extension}",
+            options.width, options.height
+        ))
+        .save_file()
 }
 
 fn email(paths: &[PathBuf]) -> anyhow::Result<()> {
@@ -170,7 +231,7 @@ fn email(paths: &[PathBuf]) -> anyhow::Result<()> {
         for path in paths {
             command.arg("--attach").arg(path.canonicalize()?);
         }
-        if !command.status()?.success() {
+        if !super::files::run_helper(&mut command)?.success() {
             anyhow::bail!("The mail application could not open an attachment draft");
         }
         Ok(())

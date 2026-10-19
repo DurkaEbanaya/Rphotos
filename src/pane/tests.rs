@@ -4,6 +4,16 @@ fn pane(ctx: &egui::Context) -> Pane {
     Pane::new(ctx, 2, 64, 1, false, true, 0)
 }
 
+#[test]
+fn actual_size_uses_source_pixels_not_downscaled_fit_texture() {
+    let ctx=egui::Context::default();let mut p=pane(&ctx);
+    p.current_texture=Some(ctx.load_texture("downscaled",egui::ColorImage::new([2048,1],egui::Color32::RED),Default::default()));
+    let record=MetadataRecord{dimensions:Some([16384,4]),..Default::default()};p.current_record=Some(Arc::new(record));
+    let viewport=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1024.0,768.0));
+    p.actual_size(viewport,2.0);
+    assert!((p.zoom-8.0).abs()<0.001,"native width16384 / physical viewport2048");
+}
+
 fn fake_paths(n: usize) -> Vec<PathBuf> {
     (0..n).map(|i| PathBuf::from(format!("/nonexistent/f{i}.png"))).collect()
 }
@@ -201,6 +211,7 @@ fn real_files_move_out_and_the_pane_follows() {
     }
     let mut p = pane(&ctx);
     p.open_path(&dir.path().join("img2.png"), &ctx, Default::default());
+    settle(&mut p);
     assert_eq!(p.image_paths.len(), 6);
     assert_eq!(p.current_index, 2);
     settle(&mut p);
@@ -234,6 +245,7 @@ fn real_files_move_out_and_the_pane_follows() {
         p.jump_to(p.image_paths.len() - 1, &ctx);
         settle(&mut p);
         p.remove_current(&ctx, move_out).unwrap().unwrap();
+        settle(&mut p);
         assert_eq!(p.image_paths.len(), expected_len);
         assert_eq!(p.current_index, expected_len - 1);
         assert!(p.current_texture.is_some());

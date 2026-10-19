@@ -17,6 +17,15 @@ pub(super) struct Catalog {
     pub sort: u8,
     pub assign_new: bool,
     pub slideshow: bool,
+    pub derived: Option<Derived>,
+}
+
+#[derive(Default)]
+pub(super) struct Derived {
+    albums: std::collections::HashMap<i64, Vec<usize>>,
+    folders: std::collections::HashMap<PathBuf, BTreeMap<PathBuf, Option<usize>>>,
+    order: Vec<super::store::Album>,
+    sort: u8,
 }
 
 pub(super) struct AlbumPicker {
@@ -27,9 +36,54 @@ pub(super) struct AlbumPicker {
     pub selected: std::collections::HashSet<i64>,
     pub name: String,
     pub query: String,
+    layout: Option<PickerLayout>,
+}
+struct PickerLayout {
+    key: (String, bool, Option<PathBuf>, u8, u32, u64),
+    rows: Vec<super::layout::Row>,
+    offsets: Vec<f32>,
+}
+impl AlbumPicker {
+    pub(super) fn invalidate(&mut self) {
+        self.layout = None;
+    }
 }
 
 impl Library {
+    fn cached_children(&mut self, path: &std::path::Path) -> BTreeMap<PathBuf, Option<usize>> {
+        self.ensure_derived();
+        if !self
+            .catalog
+            .derived
+            .as_ref()
+            .unwrap()
+            .folders
+            .contains_key(path)
+        {
+            let children = self.state.child_folders(path);
+            self.catalog
+                .derived
+                .as_mut()
+                .unwrap()
+                .folders
+                .insert(path.to_owned(), children);
+        }
+        self.catalog.derived.as_ref().unwrap().folders[path].clone()
+    }
+    fn ensure_derived(&mut self) {
+        if self.catalog.derived.is_some() {
+            return;
+        }
+        let mut derived = Derived::default();
+        for (index, photo) in self.state.photos.iter().enumerate() {
+            if !self.thumbnails.unavailable(photo) {
+                for album in &photo.albums {
+                    derived.albums.entry(*album).or_default().push(index);
+                }
+            }
+        }
+        self.catalog.derived = Some(derived);
+    }
     pub(crate) fn take_trash(&mut self) -> Option<Vec<PathBuf>> {
         self.catalog.trash_ready.take()
     }
@@ -83,6 +137,7 @@ impl Library {
             selected: Default::default(),
             name: String::new(),
             query: String::new(),
+            layout: None,
         });
     }
 
@@ -106,7 +161,7 @@ impl Library {
             .exact_height(48.0)
             .frame(egui::Frame::NONE.fill(t.header))
             .show(ctx, |ui| {
-                if blocked || self.semantic_zoom {
+                if blocked {
                     ui.disable();
                 }
                 ui.spacing_mut().interact_size.y = 48.0;
@@ -132,17 +187,31 @@ impl Library {
                         }
                     } else {
                         if width >= 900.0
-                            && ui.button(lang.text("Показ слайдов", "Slideshow")).clicked()
+                            && ui
+                                .add_enabled(
+                                    !self.semantic_zoom,
+                                    egui::Button::new(lang.text("Показ слайдов", "Slideshow")),
+                                )
+                                .clicked()
                         {
                             self.catalog.slideshow = true;
                         }
                         if ui
-                            .button(lang.text("Добавить фотографии", "Add photos"))
+                            .add_enabled(
+                                !self.semantic_zoom,
+                                egui::Button::new(lang.text("Добавить фотографии", "Add photos")),
+                            )
                             .clicked()
                         {
                             self.start_picker(Some(id));
                         }
-                        if width >= 900.0 && ui.button(lang.text("Поделиться…", "Share…")).clicked()
+                        if width >= 900.0
+                            && ui
+                                .add_enabled(
+                                    !self.semantic_zoom,
+                                    egui::Button::new(lang.text("Поделиться…", "Share…")),
+                                )
+                                .clicked()
                         {
                             self.selection = self
                                 .state
@@ -153,7 +222,13 @@ impl Library {
                                 .collect();
                             self.catalog.share = true;
                         }
-                        if ui.button(lang.text("Выбрать", "Select")).clicked() {
+                        if ui
+                            .add_enabled(
+                                !self.semantic_zoom,
+                                egui::Button::new(lang.text("Выбрать", "Select")),
+                            )
+                            .clicked()
+                        {
                             self.selecting = true;
                             self.selection.clear();
                         }
@@ -271,12 +346,18 @@ impl Library {
         let width = (ui.available_width() - 2.0 * margin - 12.0).max(1.0);
         let columns = ((width + 12.0) / 315.0).floor().max(1.0) as usize;
         let tile_width = ((width - 12.0 * (columns - 1) as f32) / columns as f32).min(360.0);
-        let mut albums = self.state.albums.clone();
-        match self.catalog.sort {
-            1 => albums.sort_by_key(|a| a.name.to_lowercase()),
-            2 => albums.sort_by_key(|a| (a.modified, a.id)),
-            _ => {}
+        self.ensure_derived();
+        let derived = self.catalog.derived.as_mut().unwrap();
+        if derived.order.is_empty() || derived.sort != self.catalog.sort {
+            derived.order = self.state.albums.clone();
+            derived.sort = self.catalog.sort;
+            match derived.sort {
+                1 => derived.order.sort_by_key(|a| a.name.to_lowercase()),
+                2 => derived.order.sort_by_key(|a| (a.modified, a.id)),
+                _ => {}
+            }
         }
+        let albums = derived.order.clone();
         let rows = (albums.len() + 1).div_ceil(columns);
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::vertical()
@@ -306,16 +387,15 @@ impl Library {
                             }
                         } else {
                             let album = &albums[slot - 1];
-                            let indices: Vec<_> = self
-                                .state
-                                .photos
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, p)| {
-                                    p.albums.contains(&album.id) && !self.thumbnails.unavailable(p)
-                                })
-                                .map(|(i, _)| i)
-                                .collect();
+                            let indices = self
+                                .catalog
+                                .derived
+                                .as_ref()
+                                .unwrap()
+                                .albums
+                                .get(&album.id)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]);
                             let cover = album
                                 .cover
                                 .and_then(|id| {
@@ -325,6 +405,7 @@ impl Library {
                                         .copied()
                                 })
                                 .or_else(|| indices.first().copied());
+                            let count = indices.len();
                             let image = Rect::from_min_size(rect.min, vec2(rect.width(), 140.0));
                             self.paint_cover(ui, image, cover, t);
                             ui.painter().rect_filled(
@@ -345,7 +426,7 @@ impl Library {
                                 rect.min + vec2(12.0, 176.0),
                                 &format!(
                                     "{} {}{}",
-                                    indices.len(),
+                                    count,
                                     lang.text("снимков", "photos"),
                                     if album.automatic {
                                         lang.text(" · авто", " · auto")
@@ -418,19 +499,19 @@ impl Library {
                 },
             );
         });
-        let cover = album
-            .cover
-            .and_then(|id| {
-                self.state.photos.iter().position(|p| {
-                    p.id == id && p.albums.contains(&album.id) && !self.thumbnails.unavailable(p)
+        self.ensure_derived();
+        let indices = self.catalog.derived.as_ref().unwrap().albums.get(&album.id);
+        let cover = indices.and_then(|indices| {
+            album
+                .cover
+                .and_then(|id| {
+                    indices
+                        .iter()
+                        .find(|&&i| self.state.photos[i].id == id)
+                        .copied()
                 })
-            })
-            .or_else(|| {
-                self.state
-                    .photos
-                    .iter()
-                    .position(|p| p.albums.contains(&album.id) && !self.thumbnails.unavailable(p))
-            });
+                .or_else(|| indices.first().copied())
+        });
         if !self.selecting {
             let r = Rect::from_min_size(
                 ui.cursor().min + vec2(margin + 24.0, 0.0),
@@ -448,8 +529,8 @@ impl Library {
 
     pub(super) fn folders(&mut self, ui: &mut egui::Ui, lang: Language, t: &Tokens, margin: f32) {
         let mut folders: BTreeMap<PathBuf, Option<usize>> = BTreeMap::new();
-        if let Some(current) = &self.folder {
-            folders = self.state.child_folders(current);
+        if let Some(current) = self.folder.clone() {
+            folders = self.cached_children(&current);
             ui.horizontal(|ui| {
                 ui.add_space(margin);
                 ui.label(current.to_string_lossy());
@@ -685,7 +766,7 @@ impl Library {
                             {
                                 picker.folder = None;
                             }
-                            for child in self.state.child_folders(&folder).into_keys() {
+                            for child in self.cached_children(&folder).into_keys() {
                                 if ui
                                     .button(child.file_name().unwrap_or_default().to_string_lossy())
                                     .clicked()
@@ -707,38 +788,57 @@ impl Library {
                     lang.text("Выбрано", "Selected"),
                     picker.selected.len()
                 ));
-                let query = picker.query.to_lowercase();
-                let indices: Vec<_> = self
-                    .state
-                    .photos
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| {
-                        !self.thumbnails.unavailable(p)
-                            && (!picker.folders
-                                || picker.folder.as_ref().is_some_and(|folder| {
-                                    p.path.parent() == Some(folder.as_path())
-                                }))
-                            && (p.path.to_string_lossy().to_lowercase().contains(&query)
-                                || p.text.to_lowercase().contains(&query))
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
-                let items: Vec<_> = indices
-                    .iter()
-                    .map(|&i| (i, self.thumbnails.aspect(&self.state.photos[i])))
-                    .collect();
-                let gap = if picker.density == 2 { 6.0 } else { 12.0 };
-                let target = match picker.density {
-                    0 => 512.0,
-                    1 => 256.0,
-                    _ => 96.0,
-                };
-                let rows = super::layout::rows(&items, ui.available_width() - 12.0, target, gap);
-                let mut offsets = vec![0.0];
-                for row in &rows {
-                    offsets.push(offsets.last().unwrap() + row.height + gap);
+                let key = (
+                    picker.query.clone(),
+                    picker.folders,
+                    picker.folder.clone(),
+                    picker.density,
+                    (ui.available_width() - 12.0).to_bits(),
+                    self.thumbnails.revision,
+                );
+                if picker
+                    .layout
+                    .as_ref()
+                    .is_none_or(|layout| layout.key != key)
+                {
+                    let query = picker.query.to_lowercase();
+                    let indices: Vec<_> = self
+                        .state
+                        .photos
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| {
+                            !self.thumbnails.unavailable(p)
+                                && (!picker.folders
+                                    || picker.folder.as_ref().is_some_and(|folder| {
+                                        p.path.parent() == Some(folder.as_path())
+                                    }))
+                                && (p.path.to_string_lossy().to_lowercase().contains(&query)
+                                    || p.text.to_lowercase().contains(&query))
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    let items: Vec<_> = indices
+                        .iter()
+                        .map(|&i| (i, self.thumbnails.aspect(&self.state.photos[i])))
+                        .collect();
+                    let gap = if picker.density == 2 { 6.0 } else { 12.0 };
+                    let target = match picker.density {
+                        0 => 512.0,
+                        1 => 256.0,
+                        _ => 96.0,
+                    };
+                    let rows =
+                        super::layout::rows(&items, ui.available_width() - 12.0, target, gap);
+                    let mut offsets = vec![0.0];
+                    for row in &rows {
+                        offsets.push(offsets.last().unwrap() + row.height + gap);
+                    }
+                    picker.layout = Some(PickerLayout { key, rows, offsets });
                 }
+                let layout = picker.layout.as_ref().unwrap();
+                let rows = &layout.rows;
+                let offsets = &layout.offsets;
                 egui::ScrollArea::vertical()
                     .id_salt("album_photo_picker")
                     .auto_shrink([false, false])
