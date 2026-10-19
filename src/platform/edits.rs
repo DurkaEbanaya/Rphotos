@@ -592,6 +592,27 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn native_replacement_preserves_alternate_streams_through_edit_and_undo() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("photo.png");
+        image::RgbImage::new(6, 4).save(&path).unwrap();
+        let mut stream = path.as_os_str().to_os_string();
+        stream.push(":rphotos-test");
+        std::fs::write(&stream, b"retained alternate stream").unwrap();
+        let edit = apply(&path, Transform::Right).unwrap();
+        assert_eq!(
+            std::fs::read(&stream).unwrap(),
+            b"retained alternate stream"
+        );
+        undo(edit).unwrap();
+        assert_eq!(
+            std::fs::read(&stream).unwrap(),
+            b"retained alternate stream"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinks_and_hardlinks_cannot_redirect_atomic_edit() {

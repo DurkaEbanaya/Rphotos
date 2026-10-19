@@ -148,10 +148,11 @@ mod native {
                 .map(|u| &*(u.as_ref() as *const NSURL as *const NSObject))
                 .collect();
             let items = NSArray::from_slice(&refs);
-            let picker = NSSharingServicePicker::initWithItems(
-                NSSharingServicePicker::alloc(),
-                items.as_ref(),
-            );
+            // Objective-C lightweight generics are erased at runtime. The picker
+            // accepts an untyped NSArray; all retained objects above are NSURLs.
+            let untyped = &*(items.as_ref() as *const NSArray<NSObject> as *const NSArray);
+            let picker =
+                NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), untyped);
             picker.showRelativeToRect_ofView_preferredEdge(view.bounds(), view, NSRectEdge::MaxY);
             PICKER.with(|slot| *slot.borrow_mut() = Some(picker));
         }
