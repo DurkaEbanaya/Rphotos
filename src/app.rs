@@ -850,7 +850,8 @@ impl eframe::App for App {
 
         self.handle_external_open_requests(ctx);
         self.library.poll(ctx);
-        if self.library_visible {
+        let operation_modal = self.settings_error.is_some() || !self.trash_errors.is_empty();
+        if self.library_visible && !operation_modal {
             let dropped = ctx.input(|i| i.raw.dropped_files.clone());
             for file in dropped {
                 if let Some(path) = file.path {
@@ -863,10 +864,10 @@ impl eframe::App for App {
                     }
                 }
             }
-        } else { self.handle_dropped_files(ctx); }
+        } else if !operation_modal { self.handle_dropped_files(ctx); }
         if self.library_visible {
             self.update_title(ctx);
-            if let Some(open) = self.library.show_blocked(ctx, &mut self.settings,self.pending_permanent_delete.is_some()) {
+            if let Some(open) = self.library.show_blocked(ctx, &mut self.settings,self.pending_permanent_delete.is_some() || operation_modal) {
                 self.panes.truncate(1);
                 self.panes[0].open_library(open.paths, open.index, ctx);
                 if open.slideshow {self.viewer.start_slideshow(ctx);}
@@ -886,7 +887,7 @@ impl eframe::App for App {
             self.update_title(ctx);
             let favorite = self.panes[0].image_paths.get(self.panes[0].current_index).is_some_and(|p|self.library.is_favorite(p));
             ctx.data_mut(|d|d.insert_temp(egui::Id::new("rphotos.viewer.favorite"),favorite));
-            let blocked = self.library.has_dialog() || self.pending_permanent_delete.is_some();
+            let blocked = self.library.has_dialog() || self.pending_permanent_delete.is_some() || operation_modal;
             match self.viewer.show(ctx, &mut self.panes[0], &mut self.settings, blocked) {
                 crate::viewer::Action::Edited(_path) => { self.library.refresh(); }
                 crate::viewer::Action::Favorite => {
@@ -916,7 +917,7 @@ impl eframe::App for App {
             return;
         }
         if !ctx.wants_keyboard_input()
-            && !self.show_settings && !self.show_about && self.pending_permanent_delete.is_none()
+            && !self.show_settings && !self.show_about && self.pending_permanent_delete.is_none() && !operation_modal
             && ctx.input(|i| i.key_pressed(egui::Key::Escape) && !i.viewport().fullscreen.unwrap_or(false)) {
             self.close_images();
             self.library_visible = true;
@@ -925,7 +926,7 @@ impl eframe::App for App {
         if self.bench.nav.is_some() {
             // The benchmark is the keyboard for the duration of the run.
             self.tick_nav_bench(ctx);
-        } else {
+        } else if !operation_modal {
             self.handle_keyboard(ctx);
         }
         self.update_title(ctx);

@@ -2,7 +2,8 @@
 
 Audit CI47ec70b: Linux полностью прошёл; Windows выявил открытый временный handle,
 блокирующий ReplaceFile (os error32), macOS — неретейнимый AnyObject в Share array.
-Исправление закрывает File, сохраняя TempPath guard, и использует NSObject superclass.
+Исправление закрывает File, сохраняя TempPath guard, и сохраняет concrete NSURL
+при retain массива, стирая lightweight generics только на границе AppKit API.
 Тесты не отключались; результат повторного native CI фиксируется после завершения.
 
 Проверено локально на Linux / KDE Wayland, Rust 1.98.1.
@@ -35,6 +36,16 @@ GPU captures: `/tmp/opencode/rphotos-audit-captures`, библиотека/Revea
 `/tmp/opencode/rphotos-audit-smoke-lamqe2ak` — обе сцены по5с в isolated XDG,
 процессы закрыты. Реальные clipboard/print/share не вызывались.
 Новые Win/Mac adapters ещё требуют remote compilation/native acceptance.
+
+Windows10 tablet через SSH: PowerShell parser принял фактический print-helper
+(0 parse errors); WPF/ReachFramework types доступны. Создана одна синтетическая
+FixedDocument page с Image, без ShowDialog/PrintDocument: задания печати не было.
+Это только проверка helper primitives, не приёмка диалога/принтера.
+На том же Windows10 отдельный synthetic test вызвал ReplaceFileW с закрытым
+staging handle: новые bytes и исходный alternate data stream сохранены.
+Временные файлы/каталог удалены; пользовательские оригиналы не затрагивались.
+Settings/trash error modals дополнительно блокируют фоновые drop и keyboard commands
+библиотеки/просмотрщика. Последний повтор:234 passed,12 ignored.
 
 Последний локальный повтор:234 passed /12 ignored, clippy только8 прежних upstream
 warnings; все4 opt-in GPU capture tests прошли в
